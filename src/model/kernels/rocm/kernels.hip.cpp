@@ -6025,58 +6025,29 @@ __launch_bounds__(256) __global__
           __builtin_memcpy(&a_hi[u], &h[8], 32);
         } else if constexpr (kQ20) {
           // Q2_0: four elements per byte, value = d * (q - 1); the
-          // block's d was staged in w at fetch time. Only four values are
-          // reachable per 64-element block -- {-d, +/-0, d, 2d} -- so they
-          // are built once as an 8-byte register table and the fragment is
-          // selected straight as F16 with v_perm. This removes the
-          // per-element int->float conversions, which are quarter-rate on
-          // RDNA and made this the most issue-bound dequant in the kernel
-          // (measured: 62.8 GB/s cold vs 173.9 for the Q4_K path that
-          // already permutes). Bit-exactness: -d, +/-0 and d are exact, and
-          // 2d is one correctly-rounded f16 multiply -- the same value the
-          // float path produces before its single RN into f16. Verified
-          // over all 65536 f16 scales x 4 codes: identical for every finite
-          // scale; only a non-finite (corrupt) d differs, where the float
-          // reference yields NaN/quieting garbage anyway.
+          // block's d was staged in w at fetch time. Values go through
+          // the same float arithmetic as the golden reference before
+          // rounding into F16 fragments.
           const std::uint32_t qw[2] = {raw[u][kb].x, raw[u][kb].y};
-          const std::uint32_t ds = raw[u][kb].w & 0xFFFFU;
-          const std::uint32_t dbl = __half_as_ushort(__hmul(
-              __builtin_bit_cast(__half, static_cast<std::uint16_t>(ds)),
-              __builtin_bit_cast(__half, static_cast<std::uint16_t>(0x4000))));
-          // v_perm_b32 indexes an 8-byte source with the SECOND operand's
-          // bytes first (0..3 = second, 4..7 = first) and selects one byte per
-          // result byte, so the call below passes (tab1, tab0) to lay the
-          // table out as {-d, +-0, d, 2d} at indices 0..7 and entry q at
-          // bytes 2q, 2q+1. The signed zero carries d's sign because IEEE
-          // 0 * d takes the product sign.
-          const std::uint32_t tab0 = (ds ^ 0x8000U) | ((ds & 0x8000U) << 16);
-          const std::uint32_t tab1 = ds | (dbl << 16);
-          // One perm per element pair: selector byte j names the source byte
-          // that lands in result byte j, so the two f16 of the pair read
-          // table[q0] (bytes 0,1 of the result) and table[q1] (bytes 2,3):
-          //   sel = 2*q0 | (2*q0+1)<<8 | 2*q1<<16 | (2*q1+1)<<24.
-          auto code_pair = [&](int e) -> __half2 {
-            const std::uint32_t word = qw[e >> 4];
-            const int sh = 2 * (e & 15);
-            const std::uint32_t q0 = (word >> sh) & 0x3U;
-            const std::uint32_t q1 = (word >> (sh + 2)) & 0x3U;
-            // Result byte j takes source byte named by selector byte j (a
-            // selector >= 8 fills the lane with 0xff); entry q occupies
-            // source bytes 2q and 2q+1.
-            const std::uint32_t sel = (2U * q0) | ((2U * q0 + 1U) << 8) |
-                                      ((2U * q1) << 16) | ((2U * q1 + 1U) << 24);
-            return __builtin_bit_cast(
-                __half2, static_cast<std::uint32_t>(__builtin_amdgcn_perm(
-                             static_cast<int>(tab1), static_cast<int>(tab0),
-                             static_cast<int>(sel))));
-          };
+          const float d = __half2float(__builtin_bit_cast(
+              __half, static_cast<std::uint16_t>(raw[u][kb].w)));
+          float v[32];
+#pragma unroll
+          for (int e = 0; e < 32; ++e) {
+            // Element e lives at bit 2*e of the staged word (x holds code
+            // bytes 0-3 = elements 0-15, y bytes 4-7 = elements 16-31):
+            // byte e/4 at bit offset 2*(e%4) within it, as the golden.
+            const std::uint32_t q = (qw[e >> 4] >> (2 * (e & 15))) & 0x3U;
+            v[e] = (static_cast<float>(q) - 1.0F) * d;
+          }
           __half2 h[16];
 #pragma unroll
           for (int i = 0; i < 4; ++i) {
-            h[2 * i] = code_pair(4 * i);
-            h[2 * i + 1] = code_pair(4 * i + 2);
-            h[8 + 2 * i] = code_pair(16 + 4 * i);
-            h[8 + 2 * i + 1] = code_pair(16 + 4 * i + 2);
+            h[2 * i] = __floats2half2_rn(v[4 * i], v[4 * i + 1]);
+            h[2 * i + 1] = __floats2half2_rn(v[4 * i + 2], v[4 * i + 3]);
+            h[8 + 2 * i] = __floats2half2_rn(v[16 + 4 * i], v[16 + 4 * i + 1]);
+            h[8 + 2 * i + 1] =
+                __floats2half2_rn(v[16 + 4 * i + 2], v[16 + 4 * i + 3]);
           }
           __builtin_memcpy(&a_lo[u], &h[0], 32);
           __builtin_memcpy(&a_hi[u], &h[8], 32);
