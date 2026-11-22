@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
-# Build Gufo with the qwen38_flash_next_gsq extension.
+# Build and install qwen38_flash_next_gsq as a gufo extension MODULE.
 #
-# The pinned GUFO_REF carries the core unsized-GGUF-tensor support from
-# gufo-org/gufo#966 (allow_unsized_tensors + TextProvider::
-# accepts_unsized_tensors) that extensions cannot replace. Once that lands
-# on gufo main, set:  GUFO_REPO=https://github.com/gufo-org/gufo.git
-#                     GUFO_REF=main
+# gufo 0.3+ builds extensions against the SDK that ships with the gufo binary
+# you already run: gufo itself is NOT rebuilt, so one binary serves every model
+# slot. The module is stamped with the host build identity and refuses to load
+# into a different gufo build, which is why this script takes the binary rather
+# than a source pin.
+#
+#   GUFO=/path/to/gufo ./scripts/build.sh
+#
+# Environment:
+#   GUFO              gufo binary to build against (default: gufo on PATH)
+#   GUFO_SDK_DIR      SDK tree of that binary; set it when the SDK is not
+#                     where the binary looks (build/release/sdk in a checkout)
+#   CMAKE_BUILD_PARALLEL_LEVEL
+#                     compile jobs (keep this at 2-4 on a box whose model slot
+#                     is resident: the HIP link is memory-hungry)
 set -euo pipefail
 
-GUFO_REPO=${GUFO_REPO:-https://github.com/Farenheith/gufo.git}
-GUFO_REF=${GUFO_REF:-ac631153}
-GUFO_DIR=${GUFO_DIR:-"$(cd "$(dirname "$0")/.." && pwd)/build-gufo"}
 EXT_DIR=$(cd "$(dirname "$0")/.." && pwd)
-GUFO_EXTENSIONS_LIST=${GUFO_EXTENSIONS_LIST:-qwen38_flash_next_gsq}
-PRESET=${PRESET:-release}
+GUFO=${GUFO:-gufo}
+export GUFO_SDK_DIR
 
-if [[ -d "$GUFO_DIR/.git" ]]; then
-  git -C "$GUFO_DIR" fetch --quiet "$GUFO_REPO" "$GUFO_REF"
-  git -C "$GUFO_DIR" checkout --quiet FETCH_HEAD
-else
-  git clone --quiet "$GUFO_REPO" "$GUFO_DIR"
-  git -C "$GUFO_DIR" checkout --quiet "$GUFO_REF"
+if ! command -v "$GUFO" >/dev/null 2>&1 && [[ ! -x "$GUFO" ]]; then
+  echo "error: '$GUFO' is not runnable; set GUFO to your gufo binary" >&2
+  exit 1
 fi
 
-# Explicit mode (-DGUFO_EXTENSIONS) alone excludes the in-tree
-# qwen38_flash_next from the shipped set; never edit extensions.lock —
-# the Nix release package derives mkServe options from it.
-cd "$GUFO_DIR"
-
-cmake --preset "$PRESET" \
-  -DGUFO_EXTENSION_DIRS="$EXT_DIR" \
-  -DGUFO_EXTENSIONS="$GUFO_EXTENSIONS_LIST"
-cmake --build --preset "$PRESET" --target gufo --parallel "${JOBS:-4}"
+# Building an extension loads nothing: no GPU, no weights.
+"$GUFO" extension install "$EXT_DIR" --yes
+echo
+"$GUFO" extension list
 
 echo
-"$GUFO_DIR/build/$PRESET/gufo" diagnose --section extensions || true
-echo
-echo "Try: $GUFO_DIR/build/$PRESET/gufo chat --model <gsq-coder shard1>.gguf"
+echo "Served by llama-swap / gufo as soon as the slot for the artifact starts:"
+echo "  curl http://127.0.0.1:8642/v1/chat/completions \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"model\":\"heretic\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
