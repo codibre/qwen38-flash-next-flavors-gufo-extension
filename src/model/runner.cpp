@@ -293,6 +293,18 @@ public:
                 .partial_prefill_retention = true,
             },
         .sampling_preset = sampling::TextModelPreset::kQwen38,
+        // Required since API 0.3 (changes/0.3/text-scheduling-profile-required):
+        // every text runner declares a scheduling profile or the host refuses
+        // it at load. This engine arms no layer-yield hook and captures one
+        // checkpoint per pass, so its passes run unsplit (max_layer_groups 1);
+        // 512 tokens is the decode-active budget the host applied to runners
+        // without a profile, so concurrency behaves as before.
+        .scheduling =
+            TextSchedulingProfile{
+                .pass_tokens = 512,
+                .max_layer_groups = 1,
+                .max_yield_decode_width = 1,
+            },
     };
   }
 

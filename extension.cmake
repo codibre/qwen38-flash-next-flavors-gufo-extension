@@ -54,6 +54,8 @@ if(TARGET gufo_qwen38_flash_next_gsq AND ENGINE_ENABLE_HIP)
   target_compile_definitions(qwen38_flash_next_gsq_mmq PRIVATE
     GGML_HIP_NO_VMM ENGINE_ENABLE_HIP=1)
   target_compile_options(qwen38_flash_next_gsq_mmq PRIVATE
+    -fvisibility=hidden -fvisibility-inlines-hidden)
+  target_compile_options(qwen38_flash_next_gsq_mmq PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3>
     $<$<COMPILE_LANGUAGE:HIP>:-ffast-math>
     $<$<COMPILE_LANGUAGE:HIP>:-fno-finite-math-only>
@@ -83,6 +85,26 @@ gufo_extension_target(
     roc::hipblas
     roc::hipblaslt
 )
+
+if(TARGET gufo_qwen38_flash_next_gsq_hip)
+  # This extension is a fork of gufo's in-tree src/models/qwen38_flash_next and
+  # keeps that namespace. gufo exports `_ZN4gufo*` from the executable and
+  # dlopens modules with RTLD_NOW|RTLD_LOCAL, so with default visibility this
+  # module's own references (probe_gguf, create, the runner) bind to the
+  # executable's copies of the same mangled names and the fork's code never
+  # runs. Hidden definitions are not interposable, so references resolve inside
+  # the module; the host services the module does not define (gufo::core,
+  # gufo::ext) still resolve from the executable, and the generated
+  # gufo_ext_module_* entry points are emitted by the host with default
+  # visibility, so loading is unaffected.
+  target_compile_options(gufo_qwen38_flash_next_gsq_hip PRIVATE
+    -fvisibility=hidden -fvisibility-inlines-hidden)
+endif()
+
+if(TARGET gufo_qwen38_flash_next_gsq)
+  target_compile_options(gufo_qwen38_flash_next_gsq PRIVATE
+    -fvisibility=hidden -fvisibility-inlines-hidden)
+endif()
 
 if(TARGET gufo_qwen38_flash_next_gsq_hip)
   set(QFN_GSQ_ROCM_DIR "${GUFO_EXTENSION_BUILD_ROOT}/src/model/kernels/rocm")

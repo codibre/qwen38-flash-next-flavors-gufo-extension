@@ -44,13 +44,24 @@ removing the entry silently drops its declared serve options (breaks
 Consequence: this extension **replaces** the in-tree Flash-Next in the binary;
 it serves both the 256-expert GSQ variants and the 512-expert original.
 
-## Build
+## Install
+
+gufo 0.3 builds and loads extensions as **modules**: `gufo` itself is not
+rebuilt, so the one binary your router already runs serves every model slot,
+extension included.
 
 ```sh
-./scripts/build.sh            # clones/pin-builds gufo into ./build-gufo
+gufo extension install /path/to/qwen38-flash-next-gsq-gufo-extension --yes
+gufo extension list
 ```
 
-or from an existing Gufo checkout:
+`extension install` compiles against the SDK that belongs to the `gufo` binary
+you invoke — set `GUFO_SDK_DIR` when it is not the checkout's
+`build/release/sdk`. The module is stamped with the host build identity, so it
+loads only into the gufo build it was made for; rebuild after every gufo
+upgrade (`gufo extension update`). `./scripts/build.sh` wraps the same call.
+
+Compile-in-tree remains available for carrying an unmerged core hunk:
 
 ```sh
 cmake --preset release \
@@ -61,7 +72,38 @@ cmake --build --preset release --target gufo --parallel
 ```
 
 Requirements: Linux, AMD Strix Halo / ROCm toolchain (`gfx1151` is the
-qualification target), Gufo extension API >= 0.1.11 with #939's core hunk.
+qualification target), Gufo extension API >= 0.3.37.
+
+## Status on a released gufo (API 0.3.37)
+
+The module loads and serves on an unmodified gufo. Verified through
+llama-swap with the `IQ1_M` coder export: the provider claims the file and
+generation runs (~157 tok/s prefill, ~36 tok/s decode, MTP drafts accepted).
+
+Two rules of the module ABI mattered here, and both apply to any extension
+that forks a built-in model:
+
+- **Do not keep a built-in namespace.** This tree is a fork of gufo's
+  `src/models/qwen38_flash_next` and originally kept
+  `gufo::models::qwen38_flash_next`. The executable exports `_ZN4gufo*;` and
+  the host dlopens modules with `RTLD_NOW|RTLD_LOCAL`, so the module's own
+  `TextProvider` pointers bound to the *executable's* copies of
+  `ProbeFlashNextGguf` and `create`. The host probe rejects coder artifacts,
+  so `ext::ProbeTextProvider` returned null and serve reported
+  `Failed to open GGUF: Invalid GGUF tensor shape or unsupported storage
+  type: blk.1.ffn_down_exps.weight` — a reader-shaped message, although the
+  reader had opened the file (with `allow_unsized_tensors = true` the fused 3-D
+  expert slabs are sized from the next tensor offset). `dladdr` on the
+  registered probe resolved to the gufo binary and the module's probe never
+  ran. `extension.cmake` now compiles the module with `-fvisibility=hidden`:
+  hidden definitions are not interposable, so references resolve inside the
+  module while host services still bind from the executable. Renaming the
+  namespace is the other fix, and is the one gufo can enforce.
+- **Declare a scheduling profile.** Since API 0.3
+  (`include/gufo/ext/changes/0.3/text-scheduling-profile-required.md`) the
+  host refuses a runner whose `TextRunnerDescriptor::scheduling` has a zero
+  field. This engine arms no layer-yield hook and captures one checkpoint per
+  pass, so it declares the unsplit profile the migration note prescribes.
 
 ## Weights and usage
 
