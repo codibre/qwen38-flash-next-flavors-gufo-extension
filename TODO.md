@@ -1,86 +1,84 @@
 # TODO
 
-## Verification status (update honestly with each push)
+## Verification status — 2026-11-22, released gufo 0.3.37, module install
+
+No core patch, no gufo fork, no `GUFO_REF`. Everything below was produced by
+`gufo extension install <dir> --yes` against an unmodified binary.
 
 - [x] Include boundary: no `src/...` includes outside the repository except
       forwarded public headers (`<gufo/ext/...>`).
-- [x] Gufo configure with `GUFO_EXTENSION_DIRS` (isolation validator green,
-      2026-11-02, gufo @59f94a4a + lock patch, `extension mode=explicit;
-      included=[qwen38_flash_next_gsq]`).
-- [x] Compile green: full `gufo` binary with the extension (`--target gufo`,
-      2026-11-02, gfx1151).
-- [x] `gufo diagnose --section extensions` lists
-      `qwen38_flash_next_gsq 0.1.0` with `provider flash-next-gsq-coder:
-      available`.
+- [x] `extension.cmake` links only public surface: `gufo_ext_runtime`,
+      `hip::host`, `roc::hipblas`, `roc::hipblaslt`, `Threads::Threads`. No
+      `gufo_core`, no download step, no vendored binaries (`git ls-files`
+      finds no `.o`/`.so`).
+- [x] `gufo diagnose --section extensions` lists the extension with
+      `provider flash-next-gsq-coder: available`.
+- [x] Module symbol binding: `nm -D` on the installed module exports **zero**
+      `gufo::models` symbols, and imports `gufo::quant::DequantizeQ5_1` from
+      the host.
+- [x] Serves **ISTA GSQ-RCO Coder `IQ1_M`** (256 experts, 2 shards, IQ4_NL
+      table): load 6.5 s, prefill 655-683 tok/s, decode 27.6 tok/s, MTP 74/96.
+- [x] Serves **AtomicChat `AD-4.27bpw-Q4_K_M-M64`** (512 experts, 3 shards,
+      Q5_1 table): load 10.8 s, decode 53.5 tok/s short runs / 36.6 tok/s over
+      an 11.5K-token answer, MTP 25/28. Needs the Q5_1 table decode.
+- [x] Serves **Swift 1.5 `IQ3_S`** (512 experts): contributor's box, numbers
+      and probes in [SWIFT-1.5.md](SWIFT-1.5.md).
+- [x] Header pre-flight of every ISTA tier over HTTP Range, no weight
+      downloads: [docs/FLAVORS.md](docs/FLAVORS.md).
+- [x] Differential gate for the Q2_0 perm-table rewrite (byte-identical over
+      2,703,384 bytes) with a negative control that moves 52.14% of payload
+      bytes. The rewrite was **slower** in a paired idle-GPU A/B and is parked
+      on `perf/q20-perm-dequant`; it is not in any shipped path.
+
+## Open
+
 - [ ] `ctest -L qwen38_flash_next_gsq` (projection ops, routed WMMA ops).
       Blocked upstream: extension test executables cannot reach core
-      implementations (`gufo_core` is link-prohibited for external targets
-      and `gufo_ext_runtime` exposes headers, not their objects), so
-      out-of-tree tests that touch `GgufReader`/`HostAllocations`/crypto
-      cannot link. The same test bodies pass upstream as part of
-      gufo#939's suite against byte-identical code paths.
-- [x] Load smoke E2E via llama-swap `intermediate` (2026-11-02): gufo main +
-      rejected-GGUF fallback PR + this extension loads the GSQ Coder IQ1_M
-      shard (`load_completed elapsed_ms=6532`, GPU 43.9 GB) and generates
-      (28 tok/s decode, MTP drafts 39/61 accepted, coherent reasoning).
-      Plain main without the PR fails at strict parse on
-      `blk.1.ffn_down_exps.weight`.
-- [ ] Full-answer smoke with a larger token budget (64-token cap only showed
-      the reasoning channel; content came back empty for that reason).
-- [ ] MTP smoke with the 256-expert draft.
-- [ ] Benchmark parity vs. in-tree #939 build.
-
-## Verified E2E recipe
-- gufo branch `feat/rejected-gguf-extension-fallback` (main + core failover:
-  strict parse → re-offer to `handles_layout_rejected` providers under
-  `TensorLayoutValidation::kFusedExpertSlabs`, plus
-  `ext::RegisterUnknownQuantFormat` for extension-declared storage types).
-  All unit coverage lives in that PR (`gguf_reader_test`,
-  `ext_runtime_neutral_contracts_test`).
-- No pin to #939 is required anymore: `kQ2_0` (id 42) is a vendored compat
-  constant, its geometry (64 el/18 B) is registered in `provider.cpp`, and
-  every model/draft open uses the slab policy (`extension.json` now requires
-  API `>= 0.1.16`).
-
-## Known blockers / caveats
-
-- Depends on the rejected-GGUF fallback PR being present in the host build
-  (it replaces the old #939 core-loader requirement). Until it merges,
-  `scripts/build.sh` defaults to `GUFO_REF=feat/rejected-gguf-extension-fallback`.
-- Provider probes are first-claim-wins over registration order; the in-tree
-  `qwen38_flash_next` probe claims every `qwen4exp` file. Explicit
-  `GUFO_EXTENSIONS` selection excludes it from the shipped set (verified
-  with `extensions.lock` intact); the old `patches/gufo-lock.patch` was
-  removed because editing the lock breaks the Nix release-package serve
-  options. If Gufo ever adds probe specificity ranking, this can coexist
-  with the in-tree model without explicit mode.
-- Building this extension together with the `qwen` extension duplicates the
-  vendored `gufo::models::qwen::vision` symbols at final link. Exclude
-  `qwen` from the selection (default in `scripts/build.sh`).
-
-## Porting backlog
-
-- [ ] Upstream quirk to report: with `BUILD_TESTING=ON`, core
-      `tests/models/*` link in-tree extension targets even when those
-      extensions are excluded by `GUFO_EXTENSIONS`, so an extension-only
-      selection cannot configure with tests. Workaround used for
-      `ctest -L qwen38_flash_next_gsq`: explicitly select every other
-      extension as well (and keep `qwen38_flash_next` out of
-      `extensions.lock`), then build only this extension's test targets.
-- [ ] Windows packaging (upstream model supports the platform; we vendored
-      Linux only so far).
+      implementations (`gufo_core` is link-prohibited for external targets and
+      `gufo_ext_runtime` exposes headers, not their objects), so out-of-tree
+      tests touching `GgufReader`/`HostAllocations`/crypto cannot link. The
+      same test bodies pass upstream in gufo#939's suite against
+      byte-identical code paths.
+- [ ] Serve ISTA base `IQ3_S` here (pre-flight says every stored type has
+      geometry; nobody has pointed a slot at it).
+- [ ] Missing `FormatOf` geometries, in the order that unlocks the most
+      flavors: `IQ2_XS` + `IQ2_XXS` (unlocks the `IQ3_XXS` tier and most of
+      `IQ2_XS`), then `IQ1_M`, then the dense-side `Q3_K`/`Q4_0`/`Q5_0` the
+      `Q2_0` tier needs. All six exist in the ds41 extension's `mmq` dispatch.
+- [ ] Resolve `ISTA-DASLab/Qwen3.8-Flash-Next-P48NVFP4-MoESQ`: its HF tree
+      returned no `.gguf`, so it is neither supported nor ruled out.
+- [ ] Windows packaging (upstream model supports the platform; vendored Linux
+      only so far).
 - [ ] Functional suite (upstream `functional/` registry) as an extension-side
       script.
-- [ ] `reference.cpp` / `cpu_ops.cpp` reference decoder + tools (need the
-      compare harness; only used by validation tooling today).
-- [ ] Docs: QUALITY/BENCHMARKS in lfm3-extension style.
+- [ ] Registry entry in `gufo-org/gufo-extension`: needs a tagged release whose
+      `extension.json` version matches, the tree digest from
+      `tools/registry.py digest`, and the author checklist answered
+      (source license, weight licenses, maintainers, evidence).
 - [ ] Reconcile with #939 reviews: re-vendor on upstream PR changes until it
       merges, then rebase onto main and drop the pin.
 
-## Minimal claim-file design (2026-11-02)
+## Corrections to what this file used to claim
 
-- Core moved to first-refusal `TextProvider::claim_file` (PR Farenheith/gufo#2,
-  9 files +110/-12). Layout-fallback / unknown-quant core APIs are gone.
-- Fixed `NthShardPath` off-by-one (shard index rewrite ate the `-`).
-- Verified E2E through llama-swap: HTTP 200, load 6629 ms, 43.9 GB VRAM,
-  27.5 tok/s, MTP drafts 39/61 accepted.
+Kept because the wrong version of this history is still in issues and PR text:
+
+- **"Requires the gufo branch `feat/rejected-gguf-extension-fallback`."** False.
+  The `Failed to open GGUF: ... blk.1.ffn_down_exps.weight` failure that
+  motivated that core failover was symbol interposition, not the parser: the
+  executable exports `_ZN4gufo*;`, modules are dlopened `RTLD_NOW|RTLD_LOCAL`,
+  and the fork's probe pointers bound to the executable's copies of the same
+  names. `dladdr` proved it. `-fvisibility=hidden` in `extension.cmake` is the
+  fix, and every artifact above loads on a released gufo. `scripts/build.sh`
+  takes a `GUFO` binary, not a source pin.
+- **"API `>= 0.1.16`."** The manifest says `>= 0.3.37`.
+- **`TextProvider::claim_file` / "Minimal claim-file design".** Retired; the
+  provider claims through `probe_gguf`, and the in-tree `qwen38_flash_next`
+  exclusion is a consequence of explicit extension selection, not a lock edit.
+
+## Upstream quirks worth reporting
+
+- With `BUILD_TESTING=ON`, core `tests/models/*` link in-tree extension targets
+  even when those extensions are excluded by `GUFO_EXTENSIONS`, so an
+  extension-only selection cannot configure with tests.
+- Extension test executables cannot reach core implementations (see the `ctest`
+  item above).

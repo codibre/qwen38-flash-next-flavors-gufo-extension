@@ -31,16 +31,16 @@ fires, both shards bind, and 1224 tensors load.
 ## Build and serve
 
 ```sh
-# Build gufo with the extension (the core branch carries the rejected-GGUF
-# fallback from gufo-org/gufo#966).
-JOBS=8 GUFO_REF=feat/rejected-gguf-extension-fallback ./scripts/build.sh
+# Install as a module against the gufo binary you already run. No gufo fork and
+# no core branch are needed: this artifact loads on a released gufo 0.3.37.
+GUFO=/path/to/gufo ./scripts/build.sh
 
 hf download ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
   --revision 99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d \
   --include "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-0000*-of-00002.gguf" \
   --local-dir models/swift-iq3s
 
-build-gufo/build/release/gufo serve llm \
+gufo serve llm \
   --model models/swift-iq3s/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf \
   --sessions 4 --context 262144 \
   --speculative mtp \

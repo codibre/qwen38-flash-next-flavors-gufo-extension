@@ -21,7 +21,19 @@ bin="$repo/tools/bench/bin"
 results="$repo/tools/bench/results"
 KSRC="$repo/src/model/kernels/rocm/kernels.hip.cpp"
 ccj=$repo/build-gufo/build/release/compile_commands.json
-D=${KERNELS_OLD:-/home/tosol/.local/share/gufo/extensions/qwen38_flash_next_gsq/source/build-gufo/build/release/extensions/build/qwen38_flash_next_gsq/build/CMakeFiles/gufo_qwen38_flash_next_gsq_hip.dir/home/tosol/projects/personal/qwen38-flash-next-gsq-gufo-extension/src/model/kernels/rocm}
+# Where the *production* kernels.hip.cpp.o lives, for the old-vs-new
+# differential. For a module install that is inside the extension store, whose
+# path embeds the absolute checkout it was compiled from, so it is passed in
+# rather than guessed:
+#   KERNELS_OLD=$(dirname "$(find "${GUFO_EXT_STORE:-$HOME/.local/share/gufo/extensions}" \
+#     -name kernels.hip.cpp.o | head -1)") bash tools/tests/negative_control.sh
+if [ -z "${KERNELS_OLD:-}" ]; then
+  echo "KERNELS_OLD is not set: point it at the directory holding the production" >&2
+  echo "kernels.hip.cpp.o, e.g. under" >&2
+  echo "  ${GUFO_EXT_STORE:-$HOME/.local/share/gufo/extensions}/<ext>/source/build-gufo/..." >&2
+  exit 1
+fi
+D=$KERNELS_OLD
 W8A8=${W8A8_O:-$D/w8a8_wave64.hip.o}
 A=${GATE_ARGS:-"--m 640 --k 2560 --topk 8 --experts 64 --rotate 8 --patterns 24"}
 

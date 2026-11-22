@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Syntax-check the two patched translation units with the module build's own
 flags, so this proves what the module build would compile. Caps itself."""
-import json, subprocess, sys, shlex
+import json, os, pathlib, subprocess, sys, shlex
 
-DB = ("/home/tosol/projects/personal/qwen38-flash-next-gsq-gufo-extension/"
-      "build-gufo/build/release/compile_commands.json")
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+# The module build's own compile database, so the flags here are the flags the
+# module gets. Point COMPILE_DB elsewhere when building a different tree.
+DB = os.environ.get(
+    "COMPILE_DB",
+    str(ROOT / "build-gufo" / "build" / "release" / "compile_commands.json"))
 WANT = ["src/model/ngram.cpp", "src/model/weights.cpp"]
+
+if not os.path.exists(DB):
+    sys.exit(f"no compile database at {DB}\n"
+             f"configure gufo with -DGUFO_EXTENSION_DIRS={ROOT} first, or set COMPILE_DB")
 
 db = json.load(open(DB))
 by_src = {}
