@@ -79,12 +79,17 @@ std::unique_ptr<NgramTable> NgramTable::Open(
     platform::PlatformFile file, std::uint64_t file_offset, std::uint64_t rows,
     std::uint32_t row_dim, core::GgmlType type, std::string* error_msg) {
   std::unique_ptr<NgramTable> t(new NgramTable());
-  const bool blocked =
-      type == core::GgmlType::kIQ4_NL || type == core::GgmlType::kQ8_0;
+  const bool blocked = type == core::GgmlType::kIQ4_NL ||
+                       type == core::GgmlType::kQ8_0 ||
+                       type == core::GgmlType::kQ5_1;
   const std::size_t block = blocked ? 32 : 1;
+  // Q5_1 is the format the upstream Qwen3.8-Flash-Next releases ship the
+  // n-gram table in (six bits per entry: d + m + 4-bit qs + 1-bit qh = 24
+  // bytes per 32 elements).
   const std::size_t block_bytes = type == core::GgmlType::kIQ4_NL ? 18
-                                  : type == core::GgmlType::kQ8_0 ? 34
-                                                                  : 2;
+                                  : type == core::GgmlType::kQ8_0  ? 34
+                                  : type == core::GgmlType::kQ5_1  ? 24
+                                                                   : 2;
   if ((!blocked && type != core::GgmlType::kBF16) || row_dim == 0 ||
       row_dim % block != 0) {
     if (error_msg != nullptr) {
@@ -125,6 +130,8 @@ void NgramTable::DecodeRow(const std::uint8_t* src, float* dst) const {
     gufo::quant::DequantizeIQ4_NL(src, dst, row_dim_);
   } else if (type_ == core::GgmlType::kQ8_0) {
     gufo::quant::DequantizeQ8_0(src, dst, row_dim_);
+  } else if (type_ == core::GgmlType::kQ5_1) {
+    gufo::quant::DequantizeQ5_1(src, dst, row_dim_);
   } else {
     for (std::uint32_t i = 0; i < row_dim_; ++i) {
       std::uint16_t bits = 0;
