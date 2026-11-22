@@ -208,12 +208,14 @@ fi
 
 # --- A/B, interleaved -------------------------------------------------------
 echo
-echo "=== A/B (interleaved old/new, median of $REPS reps of $ITERS iters) ==="
-dims=(--k 2560 --m 640 --experts 256 --topk 8)
+echo "=== A/B (interleaved old/new; $ROUNDS rounds, each the median of $REPS reps x $ITERS iters) ==="
+dims=(--k 2560 --experts 256 --topk 8)
+# Q4_K tiles need m % 256 == 0, so the control cannot share Q2_0's m=640.
+dims_for() { case "$1" in q4_k) echo --m 768 ;; *) echo --m 640 ;; esac; }
 echo "variant,type,rot,rep,ms_med,gbs_med,gbs_at_min" >"$csv"
 run_one() {  # $1 variant $2 binary $3 type $4 rotate $5 rep
   local v="$1" bin="$2" ty="$3" r="$4" rep="$5" line
-  line="$("$bin" "${dims[@]}" --type "$ty" --rotate "$r" --iters "$ITERS" --reps "$REPS" 2>/dev/null \
+  line="$("$bin" "${dims[@]}" $(dims_for "$ty") --type "$ty" --rotate "$r" --iters "$ITERS" --reps "$REPS" 2>/dev/null \
          | grep TOTAL)"
   [ -n "$line" ] || { echo "  !! no TOTAL from $v/$ty/rotate=$r" >&2; return 1; }
   python3 - "$v" "$ty" "$r" "$rep" "$line" <<'PY' >>"$csv"
@@ -228,7 +230,8 @@ PY
   printf '  %-3s %-6s rot=%-2s rep%s  %s\n' "$v" "$ty" "$r" "$rep" \
     "$(grep TOTAL <<<"$(echo "$line")" | sed 's/^ *//')"
 }
-for rep in $(seq 1 3); do
+ROUNDS="${AB_ROUNDS:-5}"
+for rep in $(seq 1 "$ROUNDS"); do
   for ty in q2_0 q4_k; do
     for r in 1 16; do
       run_one old "$out/ab_old" "$ty" "$r" "$rep"
@@ -247,7 +250,7 @@ best = collections.defaultdict(lambda: [0.0, 0.0])
 for r in rows:
     key = (r["variant"], r["type"], r["rot"])
     best[key][0] = max(best[key][0], float(r["gbs_med"]))
-    best[key][1] = max(best[key][1], float(r["gbs_best"]))
+    best[key][1] = max(best[key][1], float(r["gbs_at_min"]))
 for ty in sorted({k[1] for k in best}):
     for rot in sorted({k[2] for k in best if k[1] == ty}):
         o, n = best.get(("old", ty, rot)), best.get(("new", ty, rot))
