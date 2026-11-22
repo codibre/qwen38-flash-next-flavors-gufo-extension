@@ -102,3 +102,49 @@ that keeps the same arithmetic (algebraic bias removal, table staging,
 whole-word loads) can stay bit-exact — ds41's retune states it was "bit-exact
 by construction and by measurement" — but any change to accumulation order
 must be re-validated against the goldens before it ships.
+
+## P2-A candidate: Q2_0 decode as a register perm table
+
+Q2_0 has four values per scale — `-d`, `0`, `d`, `2d` — so decoding is a
+4-entry lookup, not arithmetic. The candidate builds those four f16 in two
+registers and selects with `v_perm_b32`:
+
+```cpp
+const std::uint32_t lo = dh16 | (neg << 16);           // {-d, +d}
+const std::uint32_t hi = zero    | (two << 16);        // {+-0, 2d}
+frag[f] = __builtin_amdgcn_perm(lo, hi, nib);          // nib = 2-bit code
+```
+
+`two` is computed by adding the exponent field with saturation and then
+`d+d`, because for `d` in (32752, 36848) the true `2d` lands below the
+round-to-inf midpoint and must become the max finite value — a naive exponent
+bump returns infinity there. `0.0f + (-0.0f)` yields `-0.0f` under RN, which is
+what `(float)0 - 1.0f` times `d` gives, so the zero entry keeps the sign.
+
+Opcode mix of the Q2_0 instantiation (`tools/prof/isa_mix.py --find
+WeightTypeE42E`): `v_cvt_f32_i32` 64 → 0, `v_pack_b32_f16` 32 → 0, 32
+`v_perm_b32` in, 1038 → 924 instructions. The int→float conversions that made
+the Q2_0 path issue-bound are gone.
+
+Two gates, both required before this ships:
+
+1. **Bitwise gate** (`tools/tests/bitexact_q20.hip.cpp`). A one-hot activation
+   turns the routed GEMM into a row copy, `out[i] = w[i][j]`, so every
+   dequantized element is read back and compared bit-for-bit against the
+   pre-change float reference. No tolerance band. Scales include 0, -0, the
+   denormals, 65504 and the `2d` overflow boundary.
+   The committed `tests/routed_wmma_ops_test.cpp` cannot be used here: it needs
+   `gufo::quant::Q2_0Value`, which the installed public SDK does not export yet.
+2. **Interleaved A/B on an idle GPU** (`tools/bench/ab_kernels.sh`). Never run
+   these benches with a slot resident — numbers taken against a busy GPU have
+   been off by 3x. The script refuses unless the GPU looks idle.
+
+```bash
+bash tools/bench/ab_kernels.sh --build-only     # compile only, safe with a slot loaded
+bash tools/bench/ab_kernels.sh                  # gate + A/B, needs an idle GPU
+```
+
+It prints a table of median and best GB/s per case with the delta, writes
+`tools/bench/results/ab_<stamp>.{log,csv}`, and exits non-zero if the bitwise
+gate fails on either build. It touches neither the module store, nor the gufo
+binary, nor llama-swap, nor a GGUF file.

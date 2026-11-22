@@ -55,6 +55,15 @@ for w in "${want[@]}"; do
       for o in w8a8_wave64.hip.o; do
         [ -f "$obj_dir/$o" ] && extra+=("$obj_dir/$o")
       done
+      # A candidate object compiled outside the build tree has no sibling
+      # objects; name them explicitly.
+      if [ -n "${EXTRA_OBJS:-}" ]; then
+        extra=()
+        for o in $EXTRA_OBJS; do
+          [ -f "$o" ] || { echo "EXTRA_OBJS entry missing: $o" >&2; exit 1; }
+          extra+=("$o")
+        done
+      fi
       hipcc "$out/qfn_routed_decode_bench.o" "$KERNELS_O" "${extra[@]}" \
         -o "$out/qfn_routed_decode_bench"
       ;;

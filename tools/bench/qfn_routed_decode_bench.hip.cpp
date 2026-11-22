@@ -19,6 +19,7 @@
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -146,6 +147,7 @@ int main(int argc, char** argv) {
   Ctx c{};
   std::string type_name = "q2_0";
   int iters = 20;
+  int reps = 5;
   for (int i = 1; i < argc; ++i) {
     if (!std::strcmp(argv[i], "--k") && i + 1 < argc) c.k = std::atoll(argv[++i]);
     else if (!std::strcmp(argv[i], "--m") && i + 1 < argc) c.m = std::atoll(argv[++i]);
@@ -155,10 +157,12 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--tokens") && i + 1 < argc) c.n_tokens = static_cast<std::uint32_t>(std::atoi(argv[++i]));
     else if (!std::strcmp(argv[i], "--rotate") && i + 1 < argc) c.rotate = std::atoi(argv[++i]);
     else if (!std::strcmp(argv[i], "--iters") && i + 1 < argc) iters = std::atoi(argv[++i]);
+    else if (!std::strcmp(argv[i], "--reps") && i + 1 < argc) reps = std::atoi(argv[++i]);
     else {
       std::fprintf(stderr,
                    "usage: %s [--k 4096] [--m 2048] [--experts 24] [--topk 8] "
-                   "[--type q2_0|q4_k|q8_0] [--iters 20]\n",
+                   "[--type q2_0|q4_k|q8_0] [--tokens 1] [--rotate 1] "
+                   "[--iters 20] [--reps 5]\n",
                    argv[0]);
       return 2;
     }
@@ -274,48 +278,77 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "RoutedF16Gemm refused this shape/type\n");
     return 3;
   }
-  float ms_gate = TimeRun(a, b, [&] {
+  // Repetitions, then median + spread. A GTT page-in spike moves a plain mean
+  // by 2x on this box (observed 2.5 vs 69 GB/s for the same binary), so min and
+  // median are the only readable numbers; keep reps>=5 for A/B decisions.
+  const auto measure = [&](const std::function<void()>& fn) {
+    std::vector<float> v;
+    v.reserve(reps);
+    for (int r = 0; r < reps; ++r) v.push_back(TimeRun(a, b, fn, 5, iters));
+    std::sort(v.begin(), v.end());
+    return v;
+  };
+  const std::vector<float> v_gate = measure([&] {
     std::size_t r = rot++ % R;
     RoutedF16Gemm(c.w_gate, c.type, c.x, tiles_p[r],
                   static_cast<std::uint32_t>(c.capacity), c.tile_rows,
                   bounds_p[r], rt_p[r], rs_p[r], nullptr, c.gate_out, nullptr,
                   c.m, c.k, nullptr);
-  }, 3, iters);
-  float ms_up = TimeRun(a, b, [&] {
+  });
+  const std::vector<float> v_up = measure([&] {
     std::size_t r = rot++ % R;
     RoutedF16Gemm(c.w_up, c.type, c.x, tiles_p[r],
                   static_cast<std::uint32_t>(c.capacity), c.tile_rows,
                   bounds_p[r], rt_p[r], rs_p[r], c.gate_out, nullptr, c.glu,
                   c.m, c.k, nullptr);
-  }, 3, iters);
-  float ms_down = TimeRun(a, b, [&] {
+  });
+  const std::vector<float> v_down = measure([&] {
     std::size_t r = rot++ % R;
     RoutedF16Gemm(c.w_down, c.type, reinterpret_cast<const __half*>(c.glu),
                   tiles_p[r], static_cast<std::uint32_t>(c.capacity),
                   c.tile_rows, bounds_p[r], rt_p[r], rs_p[r], nullptr,
                   c.down_out, nullptr, c.k, c.m, nullptr);
-  }, 3, iters);
+  });
+  // One routed FFN layer per decode token, timed as a unit: TOTAL is then a
+  // real per-layer latency instead of a sum of separately averaged parts.
+  const std::vector<float> v_layer = measure([&] {
+    std::size_t r = rot++ % R;
+    RoutedF16Gemm(c.w_gate, c.type, c.x, tiles_p[r],
+                  static_cast<std::uint32_t>(c.capacity), c.tile_rows,
+                  bounds_p[r], rt_p[r], rs_p[r], nullptr, c.gate_out, nullptr,
+                  c.m, c.k, nullptr);
+    RoutedF16Gemm(c.w_up, c.type, c.x, tiles_p[r],
+                  static_cast<std::uint32_t>(c.capacity), c.tile_rows,
+                  bounds_p[r], rt_p[r], rs_p[r], c.gate_out, nullptr, c.glu,
+                  c.m, c.k, nullptr);
+    RoutedF16Gemm(c.w_down, c.type, reinterpret_cast<const __half*>(c.glu),
+                  tiles_p[r], static_cast<std::uint32_t>(c.capacity),
+                  c.tile_rows, bounds_p[r], rt_p[r], rs_p[r], nullptr,
+                  c.down_out, nullptr, c.k, c.m, nullptr);
+  });
 
-  const auto report = [&](const char* name, float ms, double bytes) {
-    std::printf("  %-6s %7.3f ms   %7.1f GB/s   (%.1f MiB routed/token)\n", name,
-                ms, bytes / (ms * 1e-3) / 1e9, bytes / 1048576.0);
+  const auto report = [&](const char* name, const std::vector<float>& v,
+                          double bytes) {
+    const auto gbs = [&](float ms) { return bytes / (ms * 1e-3) / 1e9; };
+    std::printf(
+        "  %-6s med %7.3f ms  %7.1f GB/s   [ms min %6.3f max %6.3f -> best "
+        "%7.1f GB/s]\n",
+        name, v[v.size() / 2], gbs(v[v.size() / 2]), v.front(), v.back(),
+        gbs(v.front()));
   };
-  report("gate", ms_gate, per_pass);
-  report("up", ms_up, per_pass);
-  report("down", ms_down, down_pass);
-  const float total = ms_gate + ms_up + ms_down;
-  std::printf("  rotate=%d expert sets (%.0f MiB working set, %s)\n", R,
+  report("gate", v_gate, per_pass);
+  report("up", v_up, per_pass);
+  report("down", v_down, down_pass);
+  std::printf("  rotate=%d expert sets (%.0f MiB working set, %s), %.1f MiB routed/token\n", R,
               R * c.topk * 3 * c.m * c.k *
                   (BlockBytes(c.type) / (double)BlockElems(c.type)) / 1048576.0,
               R * c.topk * 3 * c.m * c.k *
                           (BlockBytes(c.type) / (double)BlockElems(c.type)) >
                       32u * 1048576
                   ? "DRAM-cold"
-                  : "LLC-resident");
-  std::printf("  %-6s %7.3f ms   %7.1f GB/s   (%.1f MiB routed/token)\n",
-              "TOTAL", total,
-              (2 * per_pass + down_pass) / (total * 1e-3) / 1e9,
+                  : "LLC-resident",
               (2 * per_pass + down_pass) / 1048576.0);
+  report("TOTAL", v_layer, 2 * per_pass + down_pass);
   std::printf("note: decode uses a %u-row tile with one live row; the tile "
               "height pads compute, not weight traffic.\n", c.tile_rows);
   return 0;
