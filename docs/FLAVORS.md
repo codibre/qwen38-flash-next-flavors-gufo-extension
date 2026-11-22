@@ -61,17 +61,34 @@ any `!!` REJECT on tensor types (a type the binder will not take), and whether
 
 ## Flavors
 
-| flavor | experts | n-gram table | first shard | status here |
+| flavor | experts | n-gram table | weights | status here |
 |---|---|---|---|---|
 | ISTA-DASLab `GSQ-RCO-Coder-GGUF/IQ1_M` | 256 | IQ4_NL, 28.80 GB | 29.61 GB | **loads and serves** (slot `heretic`, via Abiray's abliterated re-host of the same recipe) |
-| ISTA-DASLab `GSQ-RCO-GGUF/{Q2_0,IQ2_XS,IQ3_XXS,IQ3_S}` | 256 | IQ4_NL, 28.80 GB | 37.6 / 39.2 / 47.0 / 54.8 GB | not pre-flighted yet; table identical across all four, so only the dense/expert mix varies |
+| ISTA-DASLab `GSQ-RCO-GGUF/IQ3_S` | 512 | IQ4_NL, 28.80 GB | 54.81 GB | **no binder gaps** — every stored type has geometry. Routed mix is identical to `heretic`'s (`down_exps` IQ4_NL×39 + Q2_0×9; gate/up IQ2_S×20 / IQ3_XXS×17 / IQ3_S×10 / IQ4_XS×1) at double the expert count |
+| ISTA-DASLab `GSQ-RCO-GGUF/IQ3_XXS` | 512 | IQ4_NL, 28.80 GB | 47.03 GB | **will not load**: `IQ2_XS` ×20 (4.85 GB) and `IQ2_XXS` ×18 (3.89 GB) have no `FormatOf` geometry |
+| ISTA-DASLab `GSQ-RCO-GGUF/IQ2_XS` | 512 | IQ4_NL, 28.80 GB | 39.22 GB | **will not load**: `IQ2_XXS` ×22 (4.76 GB) and `IQ1_M` ×6 (1.10 GB) |
+| ISTA-DASLab `GSQ-RCO-GGUF/Q2_0` | 512 | IQ4_NL, 28.80 GB | 37.57 GB | **will not load**: legacy k/quants on the *dense* side — `Q3_K` ×91 (0.73 GB, including `token_embd.weight [2560, 248320]`), `Q4_0` ×16, `Q5_0` ×7 |
 | AtomicChat `AD-4.27bpw-Q4_K_M-M64` | **512** | **Q5_1**, 38.40 GB | 44.87 + 11.26 GB | **loads and serves** after the Q5_1 table support (`0e5ef6d`); 3 shards, joined by core |
 | ISTA-DASLab `P48NVFP4-MoESQ` | ? | ? | — | HF tree returned no `.gguf`; unresolved, needs a look before any claim |
 
-The ISTA flavors and AtomicChat agree on **36 of 37 `qwen4exp` keys**; the only
-difference is `expert_count` (256 vs 512), which the gate allows. Per-token
-routed traffic is nearly the same for both (~786 MB and ~783 MB), because
-AtomicChat trades fewer/larger experts for a wider top-k.
+So the table format is *not* what separates the flavors — all four ISTA shards are
+the same 28.80 GB IQ4_NL block, and only AtomicChat needed Q5_1. What separates
+them is the storage type of ordinary weights. Missing `FormatOf` geometries,
+union of the three blocked flavors:
+
+```
+IQ2_XXS   IQ2_XS   IQ1_M   Q3_K   Q4_0   Q5_0
+```
+
+All six exist in the ds41 extension's `mmq` dispatch, which is where a port
+would start. `IQ3_S` is the one flavor that needs nothing: it is `heretic`'s
+routing recipe at 512 experts.
+
+AtomicChat and `heretic` agree on **36 of 37 `qwen4exp` keys**; the only
+difference is `expert_count` (512 vs 256), which the gate allows — and the four
+ISTA base flavors declare 512 like AtomicChat. Per-token routed traffic is
+nearly the same for both (~786 MB and ~783 MB), because AtomicChat trades
+fewer/larger experts for a wider top-k.
 
 ### AtomicChat specifics
 
