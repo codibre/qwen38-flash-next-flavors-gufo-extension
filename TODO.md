@@ -12,7 +12,7 @@ No core patch, no gufo fork, no `GUFO_REF`. Everything below was produced by
       `gufo_core`, no download step, no vendored binaries (`git ls-files`
       finds no `.o`/`.so`).
 - [x] `gufo diagnose --section extensions` lists the extension with
-      `provider flash-next-gsq-coder: available`.
+      `provider flash-next-flavors: available`.
 - [x] Module symbol binding: `nm -D` on the installed module exports **zero**
       `gufo::models` symbols, and imports `gufo::quant::DequantizeQ5_1` from
       the host.
@@ -32,7 +32,7 @@ No core patch, no gufo fork, no `GUFO_REF`. Everything below was produced by
 
 ## Open
 
-- [ ] `ctest -L qwen38_flash_next_gsq` (projection ops, routed WMMA ops).
+- [ ] `ctest -L qwen38_flash_next_flavors` (projection ops, routed WMMA ops).
       Blocked upstream: extension test executables cannot reach core
       implementations (`gufo_core` is link-prohibited for external targets and
       `gufo_ext_runtime` exposes headers, not their objects), so out-of-tree

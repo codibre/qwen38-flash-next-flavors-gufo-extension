@@ -18,8 +18,8 @@ arch="${GUFO_GPU_ARCH:-gfx1151}"
 # The extension build tree keeps its archives next to the objects; linking the
 # archives (not a bare kernels.o) resolves the cross-translation-unit calls,
 # e.g. kernels.hip.cpp -> w8a8_wave64.hip.
-BUILD_DIR="${GUFO_EXT_BUILD_DIR:-$(dirname "$(find "$HOME/.local/share/gufo/extensions/qwen38_flash_next_gsq" -name 'libgufo_qwen38_flash_next_gsq_hip.a' 2>/dev/null | head -1)")}"
-KERNELS_O="${KERNELS_O:-$(find "$HOME/.local/share/gufo/extensions/qwen38_flash_next_gsq" -name 'kernels.hip.cpp.o' 2>/dev/null | head -1)}"
+BUILD_DIR="${GUFO_EXT_BUILD_DIR:-$(dirname "$(find "$HOME/.local/share/gufo/extensions/qwen38_flash_next_flavors" -name 'libgufo_qwen38_flash_next_flavors_hip.a' 2>/dev/null | head -1)")}"
+KERNELS_O="${KERNELS_O:-$(find "$HOME/.local/share/gufo/extensions/qwen38_flash_next_flavors" -name 'kernels.hip.cpp.o' 2>/dev/null | head -1)}"
 
 if [ "$#" -gt 0 ]; then want=("$@"); else want=(peak routed); fi
 

@@ -6,4 +6,4 @@ namespace gufo::models::qwen38_flash_next {
 
 }  // namespace gufo::models::qwen38_flash_next
 
-void qwen38_flash_next_gsq_register(gufo::ext::Registry&) {}
+void qwen38_flash_next_flavors_register(gufo::ext::Registry&) {}

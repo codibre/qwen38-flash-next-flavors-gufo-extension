@@ -1,48 +1,48 @@
 {
   "schema": 1,
-  "name": "qwen38_flash_next_gsq",
+  "name": "qwen38_flash_next_flavors",
   "version": "0.2.0",
   "api_version": ">= 0.3.37",
-  "entry": "qwen38_flash_next_gsq_register",
-  "registration_target": "gufo_qwen38_flash_next_gsq",
+  "entry": "qwen38_flash_next_flavors_register",
+  "registration_target": "gufo_qwen38_flash_next_flavors",
   "depends": [],
   "platforms": [
     "linux"
   ],
   "providers": [
     {
-      "id": "flash-next-gsq-coder",
+      "id": "flash-next-flavors",
       "capability": "text_generation",
       "keys": [
         "gguf:qwen4exp-gsq"
       ],
       "model_ids": [
-        "flash-next-gsq-coder"
+        "flash-next-flavors"
       ],
       "speculative": [
         "mtp"
       ],
-      "target": "gufo_qwen38_flash_next_gsq_hip",
-      "entry": "qwen38_flash_next_gsq_provider_register"
+      "target": "gufo_qwen38_flash_next_flavors_hip",
+      "entry": "qwen38_flash_next_flavors_provider_register"
     }
   ],
   "targets": {
-    "gufo_qwen38_flash_next_gsq": {
+    "gufo_qwen38_flash_next_flavors": {
       "requires": []
     },
-    "gufo_qwen38_flash_next_gsq_hip": {
+    "gufo_qwen38_flash_next_flavors_hip": {
       "requires": [
         "hip"
       ]
     },
-    "qwen38_flash_next_gsq_projection_ops_test": {
+    "qwen38_flash_next_flavors_projection_ops_test": {
       "requires": [
         "hip",
         "testing"
       ],
       "role": "test"
     },
-    "qwen38_flash_next_gsq_routed_wmma_ops_test": {
+    "qwen38_flash_next_flavors_routed_wmma_ops_test": {
       "requires": [
         "hip",
         "testing"

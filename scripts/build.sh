@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and install qwen38_flash_next_gsq as a gufo extension MODULE.
+# Build and install qwen38_flash_next_flavors as a gufo extension MODULE.
 #
 # gufo 0.3+ builds extensions against the SDK that ships with the gufo binary
 # you already run: gufo itself is NOT rebuilt, so one binary serves every model

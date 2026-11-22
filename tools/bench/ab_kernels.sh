@@ -39,7 +39,7 @@ for a in "$@"; do
 done
 
 # --- production object (the one the installed module was built from) ---------
-KOLD="${KERNELS_OLD:-$(find "$HOME/.local/share/gufo/extensions/qwen38_flash_next_gsq" \
+KOLD="${KERNELS_OLD:-$(find "$HOME/.local/share/gufo/extensions/qwen38_flash_next_flavors" \
         -name 'kernels.hip.cpp.o' 2>/dev/null | head -1)}"
 KNEW="${KERNELS_NEW:-$out/candidate.o}"
 KSRC="$repo/src/model/kernels/rocm/kernels.hip.cpp"

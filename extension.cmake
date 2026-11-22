@@ -5,7 +5,7 @@
 # Out-of-tree rules: link gufo_ext_runtime only; never gufo_core/gufo_qwen_*.
 
 gufo_extension_target(
-  NAME gufo_qwen38_flash_next_gsq
+  NAME gufo_qwen38_flash_next_flavors
   SOURCES
     src/model/config.cpp
     src/model/continuation_layout.cpp
@@ -27,13 +27,13 @@ gufo_extension_target(
     Threads::Threads
 )
 
-if(TARGET gufo_qwen38_flash_next_gsq)
-  target_include_directories(gufo_qwen38_flash_next_gsq PUBLIC
+if(TARGET gufo_qwen38_flash_next_flavors)
+  target_include_directories(gufo_qwen38_flash_next_flavors PUBLIC
     "$<BUILD_INTERFACE:${GUFO_EXTENSION_BUILD_ROOT}/src>"
   )
 endif()
 
-if(TARGET gufo_qwen38_flash_next_gsq AND ENGINE_ENABLE_HIP)
+if(TARGET gufo_qwen38_flash_next_flavors AND ENGINE_ENABLE_HIP)
   set(QFN_GSQ_MMQ_DIR "${GUFO_EXTENSION_BUILD_ROOT}/src/model/kernels/rocm/mmq")
   set(QFN_GSQ_MMQ_SOURCES
     ${QFN_GSQ_MMQ_DIR}/qfn_ggml_stubs.hip.cpp
@@ -43,30 +43,30 @@ if(TARGET gufo_qwen38_flash_next_gsq AND ENGINE_ENABLE_HIP)
     ${QFN_GSQ_MMQ_DIR}/moe_wave64.hip.cpp
     ${QFN_GSQ_MMQ_DIR}/quantize.hip.cpp)
 
-  add_library(qwen38_flash_next_gsq_mmq STATIC ${QFN_GSQ_MMQ_SOURCES})
+  add_library(qwen38_flash_next_flavors_mmq STATIC ${QFN_GSQ_MMQ_SOURCES})
   set_source_files_properties(${QFN_GSQ_MMQ_SOURCES} PROPERTIES LANGUAGE HIP)
   set_source_files_properties(${QFN_GSQ_MMQ_DIR}/moe_wave64.hip.cpp
     PROPERTIES COMPILE_OPTIONS "-mwavefrontsize64")
-  set_target_properties(qwen38_flash_next_gsq_mmq PROPERTIES
+  set_target_properties(qwen38_flash_next_flavors_mmq PROPERTIES
     HIP_STANDARD 17
     HIP_STANDARD_REQUIRED ON
     POSITION_INDEPENDENT_CODE ON)
-  target_compile_definitions(qwen38_flash_next_gsq_mmq PRIVATE
+  target_compile_definitions(qwen38_flash_next_flavors_mmq PRIVATE
     GGML_HIP_NO_VMM ENGINE_ENABLE_HIP=1)
-  target_compile_options(qwen38_flash_next_gsq_mmq PRIVATE
+  target_compile_options(qwen38_flash_next_flavors_mmq PRIVATE
     -fvisibility=hidden -fvisibility-inlines-hidden)
-  target_compile_options(qwen38_flash_next_gsq_mmq PRIVATE
+  target_compile_options(qwen38_flash_next_flavors_mmq PRIVATE
     $<$<COMPILE_LANGUAGE:HIP>:-O3>
     $<$<COMPILE_LANGUAGE:HIP>:-ffast-math>
     $<$<COMPILE_LANGUAGE:HIP>:-fno-finite-math-only>
     $<$<COMPILE_LANGUAGE:HIP>:-Wno-unused-value>
     $<$<COMPILE_LANGUAGE:HIP>:-Wno-unused-command-line-argument>)
-  target_include_directories(qwen38_flash_next_gsq_mmq SYSTEM PUBLIC ${QFN_GSQ_MMQ_DIR})
-  target_link_libraries(qwen38_flash_next_gsq_mmq PUBLIC gufo_ext_runtime hip::host roc::hipblas)
+  target_include_directories(qwen38_flash_next_flavors_mmq SYSTEM PUBLIC ${QFN_GSQ_MMQ_DIR})
+  target_link_libraries(qwen38_flash_next_flavors_mmq PUBLIC gufo_ext_runtime hip::host roc::hipblas)
 endif()
 
 gufo_extension_target(
-  NAME gufo_qwen38_flash_next_gsq_hip
+  NAME gufo_qwen38_flash_next_flavors_hip
   SOURCES
     src/model/continuation_adapter.cpp
     src/model/kernels/rocm/blaslt.cpp
@@ -78,15 +78,15 @@ gufo_extension_target(
     src/model/drivers.cpp
     src/model/provider.cpp
   LINK_LIBRARIES
-    gufo_qwen38_flash_next_gsq
-    qwen38_flash_next_gsq_mmq
+    gufo_qwen38_flash_next_flavors
+    qwen38_flash_next_flavors_mmq
     gufo_ext_runtime
     hip::host
     roc::hipblas
     roc::hipblaslt
 )
 
-if(TARGET gufo_qwen38_flash_next_gsq_hip)
+if(TARGET gufo_qwen38_flash_next_flavors_hip)
   # This extension is a fork of gufo's in-tree src/models/qwen38_flash_next and
   # keeps that namespace. gufo exports `_ZN4gufo*` from the executable and
   # dlopens modules with RTLD_NOW|RTLD_LOCAL, so with default visibility this
@@ -97,18 +97,18 @@ if(TARGET gufo_qwen38_flash_next_gsq_hip)
   # gufo::ext) still resolve from the executable, and the generated
   # gufo_ext_module_* entry points are emitted by the host with default
   # visibility, so loading is unaffected.
-  target_compile_options(gufo_qwen38_flash_next_gsq_hip PRIVATE
+  target_compile_options(gufo_qwen38_flash_next_flavors_hip PRIVATE
     -fvisibility=hidden -fvisibility-inlines-hidden)
 endif()
 
-if(TARGET gufo_qwen38_flash_next_gsq)
-  target_compile_options(gufo_qwen38_flash_next_gsq PRIVATE
+if(TARGET gufo_qwen38_flash_next_flavors)
+  target_compile_options(gufo_qwen38_flash_next_flavors PRIVATE
     -fvisibility=hidden -fvisibility-inlines-hidden)
 endif()
 
-if(TARGET gufo_qwen38_flash_next_gsq_hip)
+if(TARGET gufo_qwen38_flash_next_flavors_hip)
   set(QFN_GSQ_ROCM_DIR "${GUFO_EXTENSION_BUILD_ROOT}/src/model/kernels/rocm")
-  gufo_extension_hip_sources(gufo_qwen38_flash_next_gsq_hip
+  gufo_extension_hip_sources(gufo_qwen38_flash_next_flavors_hip
     SOURCES
       src/model/kernels/rocm/kernels.hip.cpp
       src/model/kernels/rocm/w8a8_wave64.hip
@@ -119,57 +119,57 @@ if(TARGET gufo_qwen38_flash_next_gsq_hip)
   )
   set_source_files_properties(${QFN_GSQ_ROCM_DIR}/w8a8_wave64.hip
     PROPERTIES COMPILE_OPTIONS "-mwavefrontsize64")
-  target_compile_definitions(gufo_qwen38_flash_next_gsq_hip PRIVATE QFN_ROCM_BUILD=1)
+  target_compile_definitions(gufo_qwen38_flash_next_flavors_hip PRIVATE QFN_ROCM_BUILD=1)
   if(ENGINE_ENABLE_HIP)
-    target_compile_definitions(gufo_qwen38_flash_next_gsq_hip PRIVATE ENGINE_ENABLE_HIP=1)
+    target_compile_definitions(gufo_qwen38_flash_next_flavors_hip PRIVATE ENGINE_ENABLE_HIP=1)
   endif()
-  target_compile_options(gufo_qwen38_flash_next_gsq_hip PRIVATE
+  target_compile_options(gufo_qwen38_flash_next_flavors_hip PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O2>
     $<$<COMPILE_LANGUAGE:HIP>:-O3>
     $<$<COMPILE_LANGUAGE:HIP>:-ffast-math>
     $<$<COMPILE_LANGUAGE:HIP>:-fno-finite-math-only>
     $<$<COMPILE_LANGUAGE:HIP>:-Wno-unused-command-line-argument>)
-  target_include_directories(gufo_qwen38_flash_next_gsq_hip SYSTEM PUBLIC
+  target_include_directories(gufo_qwen38_flash_next_flavors_hip SYSTEM PUBLIC
     ${HIPCUB_INCLUDE_DIR}
     ${ROCPRIM_INCLUDE_DIR}
     ${ROCWMMA_INCLUDE_DIR})
-  target_include_directories(gufo_qwen38_flash_next_gsq_hip PUBLIC
+  target_include_directories(gufo_qwen38_flash_next_flavors_hip PUBLIC
     "$<BUILD_INTERFACE:${GUFO_EXTENSION_BUILD_ROOT}/src>"
   )
 endif()
 
 gufo_extension_target(
-  NAME qwen38_flash_next_gsq_projection_ops_test
+  NAME qwen38_flash_next_flavors_projection_ops_test
   SOURCES
     tests/projection_ops_test.cpp
   LINK_LIBRARIES
-    gufo_qwen38_flash_next_gsq_hip
-    gufo_qwen38_flash_next_gsq
+    gufo_qwen38_flash_next_flavors_hip
+    gufo_qwen38_flash_next_flavors
     gufo_ext_runtime
     hip::host
 )
 
-if(TARGET qwen38_flash_next_gsq_projection_ops_test)
-  add_test(NAME qwen38_flash_next_gsq.projection_ops
-    COMMAND qwen38_flash_next_gsq_projection_ops_test)
-  set_tests_properties(qwen38_flash_next_gsq.projection_ops
-    PROPERTIES LABELS "qwen38_flash_next_gsq;hip;gpu")
+if(TARGET qwen38_flash_next_flavors_projection_ops_test)
+  add_test(NAME qwen38_flash_next_flavors.projection_ops
+    COMMAND qwen38_flash_next_flavors_projection_ops_test)
+  set_tests_properties(qwen38_flash_next_flavors.projection_ops
+    PROPERTIES LABELS "qwen38_flash_next_flavors;hip;gpu")
 endif()
 
 gufo_extension_target(
-  NAME qwen38_flash_next_gsq_routed_wmma_ops_test
+  NAME qwen38_flash_next_flavors_routed_wmma_ops_test
   SOURCES
     tests/routed_wmma_ops_test.cpp
   LINK_LIBRARIES
-    gufo_qwen38_flash_next_gsq_hip
-    gufo_qwen38_flash_next_gsq
+    gufo_qwen38_flash_next_flavors_hip
+    gufo_qwen38_flash_next_flavors
     gufo_ext_runtime
     hip::host
 )
 
-if(TARGET qwen38_flash_next_gsq_routed_wmma_ops_test)
-  add_test(NAME qwen38_flash_next_gsq.routed_wmma_ops
-    COMMAND qwen38_flash_next_gsq_routed_wmma_ops_test)
-  set_tests_properties(qwen38_flash_next_gsq.routed_wmma_ops
-    PROPERTIES LABELS "qwen38_flash_next_gsq;hip;gpu")
+if(TARGET qwen38_flash_next_flavors_routed_wmma_ops_test)
+  add_test(NAME qwen38_flash_next_flavors.routed_wmma_ops
+    COMMAND qwen38_flash_next_flavors_routed_wmma_ops_test)
+  set_tests_properties(qwen38_flash_next_flavors.routed_wmma_ops
+    PROPERTIES LABELS "qwen38_flash_next_flavors;hip;gpu")
 endif()

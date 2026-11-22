@@ -69,10 +69,15 @@ any `!!` REJECT on tensor types (a type the binder will not take), and whether
 | ISTA-DASLab `GSQ-RCO-GGUF/IQ2_XS` | 512 | IQ4_NL, 28.80 GB | 39.22 GB | **will not load**: `IQ2_XXS` ×22 (4.76 GB) and `IQ1_M` ×6 (1.10 GB) |
 | ISTA-DASLab `GSQ-RCO-GGUF/Q2_0` | 512 | IQ4_NL, 28.80 GB | 37.57 GB | **will not load**: legacy k/quants on the *dense* side — `Q3_K` ×91 (0.73 GB, including `token_embd.weight [2560, 248320]`), `Q4_0` ×16, `Q5_0` ×7 |
 | AtomicChat `AD-4.27bpw-Q4_K_M-M64` | **512** | **Q5_1**, 38.40 GB | 44.87 + 11.26 GB | **loads and serves** after the Q5_1 table support (`0e5ef6d`); 3 shards, joined by core |
+| ukisai `Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ3_S` | 512 | IQ4_NL, 28.80 GB | 44.89 + 38.84 GB | **loads and serves** (contributor, [SWIFT-1.5.md](SWIFT-1.5.md)); needed the two reader encodings fixed in PR #1 — `bool` metadata arrays, and a `u16` `split.count` where the Coder files use `u64` |
 | ISTA-DASLab `P48NVFP4-MoESQ` | ? | ? | — | HF tree returned no `.gguf`; unresolved, needs a look before any claim |
 
-So the table format is *not* what separates the flavors — all four ISTA shards are
-the same 28.80 GB IQ4_NL block, and only AtomicChat needed Q5_1. What separates
+So the table format is *not* what separates the flavors — every ISTA tier and
+Swift 1.5 ship the same 28.80 GB IQ4_NL block, and only AtomicChat needed Q5_1.
+Shard layout varies as well, and it is worth reading instead of assuming: ISTA
+and AtomicChat put the table in its own trailing shard with its own header,
+while Swift 1.5 declares it among shard 1's 373 tensor infos and fills shard 2
+with the remaining 851 tensors. What separates
 them is the storage type of ordinary weights. Missing `FormatOf` geometries,
 union of the three blocked flavors:
 
@@ -110,8 +115,8 @@ fewer/larger experts for a wider top-k.
 
 ## Naming note
 
-The extension id (`qwen38_flash_next_gsq`), provider id
-(`flash-next-gsq-coder`) and manifest key (`gguf:qwen4exp-gsq`) predate this
+The extension id (`qwen38_flash_next_flavors`), provider id
+(`flash-next-flavors`) and manifest key (`gguf:qwen4exp-gsq`) predate this
 multi-flavor scope. They are load-bearing for the installed module and for the
 llama-swap slots, so renaming them is a deliberate, separate change — the
 provider claims on `general.architecture`, not on publisher.

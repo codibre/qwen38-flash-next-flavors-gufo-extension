@@ -2,10 +2,10 @@
 
 Follow-up on the extension-system suggestion: I packaged the model side of
 this PR as an out-of-tree extension —
-**[codibre/qwen38-flash-next-gsq-gufo-extension](https://github.com/codibre/qwen38-flash-next-gsq-gufo-extension)** —
+**[codibre/qwen38-flash-next-flavors-gufo-extension](https://github.com/codibre/qwen38-flash-next-flavors-gufo-extension)** —
 in the shape of `gufo-org/lfm3-gufo-extension` (`extension.json` +
 `extension.cmake` + sources under `<gufo/ext/...>` only; builds via
-`GUFO_EXTENSION_DIRS` with `GUFO_EXTENSIONS=qwen38_flash_next_gsq`;
+`GUFO_EXTENSION_DIRS` with `GUFO_EXTENSIONS=qwen38_flash_next_flavors`;
 configure passes the isolation validator).
 
 Findings from the port, in case they're useful for the RFC:

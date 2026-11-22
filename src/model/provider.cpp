@@ -1,4 +1,4 @@
-#include <gufo/ext/generated/qwen38_flash_next_gsq_constants.hpp>
+#include <gufo/ext/generated/qwen38_flash_next_flavors_constants.hpp>
 #include <gufo/ext/registry.hpp>
 #include <gufo/ext/text.hpp>
 
@@ -24,12 +24,12 @@ int RunFlashNextChat(const ext::TextPromptOptions& opt,
 
 }  // namespace gufo::models::qwen38_flash_next
 
-void qwen38_flash_next_gsq_provider_register(gufo::ext::Registry& registry) {
-  registry.AddProvider(gufo::ext::generated::extension_qwen38_flash_next_gsq::
-                           kProvider_flash_next_gsq_coder);
+void qwen38_flash_next_flavors_provider_register(gufo::ext::Registry& registry) {
+  registry.AddProvider(gufo::ext::generated::extension_qwen38_flash_next_flavors::
+                           kProvider_flash_next_flavors);
 #if defined(ENGINE_ENABLE_HIP)
   registry.AddTextProvider({
-      .id = "flash-next-gsq-coder",
+      .id = "flash-next-flavors",
       .probe = &gufo::models::qwen38_flash_next::ProbeFlashNext,
       .probe_gguf = &gufo::models::qwen38_flash_next::ProbeFlashNextGguf,
       .create = &gufo::models::qwen38_flash_next::CreateQwenFlashNextTextRunner,
