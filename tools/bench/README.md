@@ -105,46 +105,103 @@ must be re-validated against the goldens before it ships.
 
 ## P2-A candidate: Q2_0 decode as a register perm table
 
-Q2_0 has four values per scale — `-d`, `0`, `d`, `2d` — so decoding is a
+Q2_0 has four values per scale — `-d`, `±0`, `d`, `2d` — so decoding is a
 4-entry lookup, not arithmetic. The candidate builds those four f16 in two
 registers and selects with `v_perm_b32`:
 
 ```cpp
-const std::uint32_t lo = dh16 | (neg << 16);           // {-d, +d}
-const std::uint32_t hi = zero    | (two << 16);        // {+-0, 2d}
-frag[f] = __builtin_amdgcn_perm(lo, hi, nib);          // nib = 2-bit code
+const std::uint32_t tab0 = (ds ^ 0x8000U) | ((ds & 0x8000U) << 16);  // {-d, 0 with d's sign}
+const std::uint32_t tab1 = ds | (dbl << 16);                         // {d, 2d}
+// one perm per element pair; entry q sits at source bytes 2q and 2q+1
+const std::uint32_t sel = (2*q0) | ((2*q0+1) << 8) | ((2*q1) << 16) | ((2*q1+1) << 24);
+frag = __builtin_amdgcn_perm(tab1, tab0, sel);
 ```
 
-`two` is computed by adding the exponent field with saturation and then
-`d+d`, because for `d` in (32752, 36848) the true `2d` lands below the
-round-to-inf midpoint and must become the max finite value — a naive exponent
-bump returns infinity there. `0.0f + (-0.0f)` yields `-0.0f` under RN, which is
-what `(float)0 - 1.0f` times `d` gives, so the zero entry keeps the sign.
+**`v_perm_b32` semantics on gfx1151, learned the hard way.** The first version
+of this patch turned every output of the kernel into one constant NaN,
+`0xffc00a3d`:
 
-Opcode mix of the Q2_0 instantiation (`tools/prof/isa_mix.py --find
-WeightTypeE42E`): `v_cvt_f32_i32` 64 → 0, `v_pack_b32_f16` 32 → 0, 32
-`v_perm_b32` in, 1038 → 924 instructions. The int→float conversions that made
-the Q2_0 path issue-bound are gone.
+* the selector is **one byte per result byte**, not one nibble. A selector
+  value >= 8 is out of range and fills that lane with `0xff`, which is how a
+  nibble-packed selector silently produces `0xffff` halves.
+* the 8-byte source is indexed with the **second operand first**: indices 0..3
+  are the bytes of argument `b`, 4..7 are the bytes of argument `a`. Hence the
+  call above passes `(tab1, tab0)`.
 
-Two gates, both required before this ships:
+`tools/tests/perm_probe.hip.cpp` measures this directly, with no gufo objects:
+it permutes sources whose bytes are numbered 0..7 and prints what each selector
+picks, then checks the table against `f16((q-1) * d)` for all 65536 scales and
+4 codes — **0 mismatches for every finite `d`**; the only differences are scales
+that are themselves inf/NaN.
 
-1. **Bitwise gate** (`tools/tests/bitexact_q20.hip.cpp`). A one-hot activation
-   turns the routed GEMM into a row copy, `out[i] = w[i][j]`, so every
-   dequantized element is read back and compared bit-for-bit against the
-   pre-change float reference. No tolerance band. Scales include 0, -0, the
-   denormals, 65504 and the `2d` overflow boundary.
-   The committed `tests/routed_wmma_ops_test.cpp` cannot be used here: it needs
-   `gufo::quant::Q2_0Value`, which the installed public SDK does not export yet.
+`2d` is `__hmul(d, 0x4000)`, one correctly-rounded f16 multiply, which is the
+same value the float path produced before its single rounding into f16. An
+exponent-field bump is wrong here: it overflows for any `d > 32768`, while the
+true `2d` only rounds to infinity above 36848.
+
+Opcode mix of the largest Q2_0 instantiation (`tools/prof/isa_mix.py --find
+WeightTypeE42E`), measured on the two objects the gate actually runs:
+
+| | `v_cvt_f32_i32_e32` | `v_pack_b32_f16` | `v_perm_b32` | instructions |
+|---|---|---|---|---|
+| production | 64 | 32 | 0 | 3052 |
+| candidate | 0 | 0 | 32 | 3088 |
+
+The quarter-rate int→float conversions are gone, replaced by 32 permutes plus
+the shifts that build their selectors. Total instructions go **up** 1.2%, so
+this is a swap of op *kinds*, not a shorter kernel — whether the swap is worth
+anything is exactly what the A/B measures, and it is not a foregone conclusion.
+(An earlier draft of this file claimed 1038 → 924; that counted a smaller
+instantiation of the same template, not the one that runs.)
+
+### Gates
+
+1. **Differential bitwise gate** (`tools/tests/q20_diff.hip.cpp`,
+   `q20_diff.sh`). One deterministic workload — real dims (m=640, k=2560),
+   seeded Q2_0 payloads including the edge scales, six activation shapes — run
+   through the production `kernels.hip.cpp.o` and through the candidate object,
+   every output dumped as raw f32, then `cmp`. Byte-identical means nothing
+   observable moved. This, and not a reference comparison, is the gate: the
+   kernel's internal summation order is part of its behaviour, and an oracle
+   flags things a rewrite did not change.
+   The earlier one-hot variant (`out[i] = w[i][j]`) was dropped for exactly
+   that reason — production returns `-1.0000001` for a uniform `-1.0` matrix
+   read through one-hot `x` while all-ones `x` returns `-128.0` exactly, so
+   one-hot extraction is not bit-faithful. The committed
+   `tests/routed_wmma_ops_test.cpp` is unusable here too: it needs
+   `gufo::quant::Q2_0Value`, which the installed public SDK does not export.
 2. **Interleaved A/B on an idle GPU** (`tools/bench/ab_kernels.sh`). Never run
    these benches with a slot resident — numbers taken against a busy GPU have
    been off by 3x. The script refuses unless the GPU looks idle.
 
 ```bash
 bash tools/bench/ab_kernels.sh --build-only     # compile only, safe with a slot loaded
+bash tools/bench/ab_kernels.sh --gate-only      # differential gate only, seconds of GPU time
 bash tools/bench/ab_kernels.sh                  # gate + A/B, needs an idle GPU
 ```
 
-It prints a table of median and best GB/s per case with the delta, writes
-`tools/bench/results/ab_<stamp>.{log,csv}`, and exits non-zero if the bitwise
-gate fails on either build. It touches neither the module store, nor the gufo
-binary, nor llama-swap, nor a GGUF file.
+It prints the ISA comparison, the byte-for-byte verdict, then a table of median
+and best GB/s per case with the delta, and writes
+`tools/bench/results/ab_<stamp>.{log,csv}` plus the dumps
+`tools/bench/results/{old,new}.bin`. It exits non-zero if the dumps differ. It
+touches neither the module store, nor the gufo binary, nor llama-swap, nor a
+GGUF file. The candidate object is compiled from this repo's own compile DB
+(`build-gufo/build/release/compile_commands.json`) and is reused only when it
+is newer than the kernel source — the compile DB in gufo's own checkout points
+at gufo's in-tree kernel file, which is not the code under test.
+3. **Negative control** (`tools/tests/negative_control.sh`). A gate that always
+   says "identical" certifies nothing, so this rebuilds the candidate with one
+   selector field deliberately wrong (`2*q0+1` → `2*q0+3`, out of range for
+   `q0 = 3`) and requires the gate to *fail*. Measured here: it moved
+   1,409,514 of 2,703,360 payload bytes (52.1%), and its non-finite output count
+   jumped from 245,760 to 327,680.
+
+Current state of these gates, with the objects the script builds today:
+
+```
+differential gate : IDENTICAL, 2,703,384 bytes (24 layer runs, 6 shapes)
+negative control  : detected, 52.1% of payload bytes differ
+ISA               : v_cvt_f32_i32 64 → 0, v_pack_b32_f16 32 → 0, v_perm_b32 0 → 32
+performance A/B   : not run — needs an idle GPU, run ab_kernels.sh without a slot loaded
+```
+

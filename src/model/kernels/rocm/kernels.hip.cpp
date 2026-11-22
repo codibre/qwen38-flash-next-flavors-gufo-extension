@@ -6043,25 +6043,31 @@ __launch_bounds__(256) __global__
           const std::uint32_t dbl = __half_as_ushort(__hmul(
               __builtin_bit_cast(__half, static_cast<std::uint16_t>(ds)),
               __builtin_bit_cast(__half, static_cast<std::uint16_t>(0x4000))));
-          // v_perm candidate bytes 0..3 = tab0, 4..7 = tab1, so table entry
-          // q occupies bytes 2q and 2q+1: tab0 = {-d, signed zero}, tab1 =
-          // {d, 2d}. The signed zero carries d's sign because IEEE 0 * d
-          // takes the product sign.
+          // v_perm_b32 indexes an 8-byte source with the SECOND operand's
+          // bytes first (0..3 = second, 4..7 = first) and selects one byte per
+          // result byte, so the call below passes (tab1, tab0) to lay the
+          // table out as {-d, +-0, d, 2d} at indices 0..7 and entry q at
+          // bytes 2q, 2q+1. The signed zero carries d's sign because IEEE
+          // 0 * d takes the product sign.
           const std::uint32_t tab0 = (ds ^ 0x8000U) | ((ds & 0x8000U) << 16);
           const std::uint32_t tab1 = ds | (dbl << 16);
-          // One perm per element pair: sel nibbles are the low/high byte
-          // indices of table[q] for the two elements, i.e.
-          // sel = 2q0 | (2q0+1)<<4 | 2q1<<8 | (2q1+1)<<12
-          //       = 34 * (q0 | q1 << 8) + 4112.
+          // One perm per element pair: selector byte j names the source byte
+          // that lands in result byte j, so the two f16 of the pair read
+          // table[q0] (bytes 0,1 of the result) and table[q1] (bytes 2,3):
+          //   sel = 2*q0 | (2*q0+1)<<8 | 2*q1<<16 | (2*q1+1)<<24.
           auto code_pair = [&](int e) -> __half2 {
             const std::uint32_t word = qw[e >> 4];
             const int sh = 2 * (e & 15);
             const std::uint32_t q0 = (word >> sh) & 0x3U;
             const std::uint32_t q1 = (word >> (sh + 2)) & 0x3U;
-            const std::uint32_t sel = 34U * (q0 | (q1 << 8)) + 4112U;
+            // Result byte j takes source byte named by selector byte j (a
+            // selector >= 8 fills the lane with 0xff); entry q occupies
+            // source bytes 2q and 2q+1.
+            const std::uint32_t sel = (2U * q0) | ((2U * q0 + 1U) << 8) |
+                                      ((2U * q1) << 16) | ((2U * q1 + 1U) << 24);
             return __builtin_bit_cast(
                 __half2, static_cast<std::uint32_t>(__builtin_amdgcn_perm(
-                             static_cast<int>(tab0), static_cast<int>(tab1),
+                             static_cast<int>(tab1), static_cast<int>(tab0),
                              static_cast<int>(sel))));
           };
           __half2 h[16];

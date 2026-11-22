@@ -12,8 +12,12 @@
 # the top checks the GPU is free and refuses to produce numbers otherwise.
 #
 # Nothing in this script touches the module store, the gufo binary, llama-swap
-# or a GGUF file. It compiles two benchmark binaries plus the bitwise dequant
-# gate (one-hot extraction against the float reference) and runs them.
+# or a GGUF file. It compiles two benchmark binaries plus the differential
+# gate (tools/tests/q20_diff.hip.cpp: same inputs through production and
+# candidate, outputs compared byte for byte) and runs them.
+#
+#   bash tools/bench/ab_kernels.sh --gate-only   # correctness only, seconds
+#   bash tools/bench/ab_kernels.sh --build-only  # compile, no GPU work
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,15 +31,18 @@ ITERS="${ITERS:-200}"
 arch="${GPU_ARCH:-gfx1151}"
 force=0
 build_only=0
+gate_only=0
 for a in "$@"; do
   [ "$a" = "--force" ] && force=1
   [ "$a" = "--build-only" ] && build_only=1
+  [ "$a" = "--gate-only" ] && gate_only=1
 done
 
 # --- production object (the one the installed module was built from) ---------
 KOLD="${KERNELS_OLD:-$(find "$HOME/.local/share/gufo/extensions/qwen38_flash_next_gsq" \
         -name 'kernels.hip.cpp.o' 2>/dev/null | head -1)}"
 KNEW="${KERNELS_NEW:-$out/candidate.o}"
+KSRC="$repo/src/model/kernels/rocm/kernels.hip.cpp"
 W8A8="${W8A8_O:-$(dirname "$KOLD")/w8a8_wave64.hip.o}"
 [ -f "$KOLD" ] || { echo "production kernels.hip.cpp.o not found; set KERNELS_OLD" >&2; exit 1; }
 [ -f "$W8A8" ] || { echo "w8a8_wave64.hip.o not found: $W8A8 (set W8A8_O)" >&2; exit 1; }
@@ -52,7 +59,9 @@ echo "reps=$REPS iters=$ITERS arch=$arch"
 
 # --- GPU must be idle --------------------------------------------------------
 busy="$(pgrep -af 'gufo|llama-server|vllm|python.*torch' | grep -v 'ab_kernels\|tee .*bench/results' | head -5 || true)"
-if [ -n "$busy" ] && [ "$force" -eq 0 ] && [ "$build_only" -eq 0 ]; then
+# The gate compares bits, so a busy GPU cannot falsify it; only timings need a
+# quiet machine.
+if [ -n "$busy" ] && [ "$force" -eq 0 ] && [ "$build_only" -eq 0 ] && [ "$gate_only" -eq 0 ]; then
   echo
   echo "REFUSING: GPU is not idle. Unload the slot (llama-swap) or pass --force."
   echo "$busy"
@@ -71,9 +80,9 @@ build_candidate() {  # candidate kernels.o = this repo's source, production flag
     echo "cannot build the candidate: no compile DB at $ccj" >&2
     echo "point KERNELS_NEW at a prebuilt kernels.hip.cpp.o instead." >&2
     return 1; }
-  cmd="$(python3 - "$ccj" "$KNEW" <<'PY'
+  cmd="$(python3 - "$ccj" "$KNEW" "$KSRC" <<'PY'
 import json, shlex, sys
-ccj, out_obj = sys.argv[1], sys.argv[2]
+ccj, out_obj, src = sys.argv[1], sys.argv[2], sys.argv[3]
 for e in json.load(open(ccj)):
     if e["file"].endswith("kernels/rocm/kernels.hip.cpp"):
         args = shlex.split(e["command"]) if "command" in e else list(e["arguments"])
@@ -86,6 +95,11 @@ for e in json.load(open(ccj)):
                 skip = True
                 continue
             acc.append(a)
+        # The compile DB describes gufo's own tree. The candidate is THIS
+        # repo's kernel source, so swap the entry's file out; compiling the
+        # in-tree copy would silently bench upstream code.
+        acc = [src if a == e["file"] else a for a in acc]
+        assert src in acc, "source substitution failed"
         if "-c" not in acc:
             acc.append("-c")
         acc += ["-o", out_obj]
@@ -100,10 +114,15 @@ PY
     echo "candidate compile failed" >&2
     return 1; }
 }
-if [ -f "$KNEW" ] && [ "${REBUILD_CANDIDATE:-0}" != 1 ]; then
+if [ -f "$KNEW" ] && [ "$KNEW" -nt "$KSRC" ] && [ "${REBUILD_CANDIDATE:-0}" != 1 ]; then
   echo "--- reusing candidate object $KNEW (REBUILD_CANDIDATE=1 to rebuild)"
 else
   build_candidate || exit 1
+fi
+
+if [ "$build_only" = 1 ]; then
+  echo "build-only: candidate object is $KNEW; no GPU work done."
+  exit 0
 fi
 
 build_bench() {  # $1 = kernels object, $2 = output binary
@@ -112,17 +131,19 @@ build_bench() {  # $1 = kernels object, $2 = output binary
       -o "$out/ab_bench.o" || return 1
   cap hipcc "$out/ab_bench.o" "$1" "$W8A8" -o "$2" || return 1
 }
-build_bench "$KOLD" "$out/ab_old" || { echo "bench(old) build failed" >&2; exit 1; }
-build_bench "$KNEW" "$out/ab_new" || { echo "bench(new) build failed" >&2; exit 1; }
+if [ "$gate_only" != 1 ]; then
+  build_bench "$KOLD" "$out/ab_old" || { echo "bench(old) build failed" >&2; exit 1; }
+  build_bench "$KNEW" "$out/ab_new" || { echo "bench(new) build failed" >&2; exit 1; }
+fi
 
-echo "--- building bitwise dequant gate against the candidate"
-KERNELS_O="$KNEW" W8A8_O="$W8A8" OUT_DIR="$results/be_new" \
-  bash "$repo/tools/tests/bitexact_q20.sh" >/dev/null || {
-    echo "bitwise gate build failed" >&2; exit 1; }
-echo "--- building bitwise dequant gate against production"
-KERNELS_O="$KOLD" W8A8_O="$W8A8" OUT_DIR="$results/be_old" \
-  bash "$repo/tools/tests/bitexact_q20.sh" >/dev/null || {
-    echo "bitwise gate build failed" >&2; exit 1; }
+echo "--- building differential Q2_0 harness against the candidate"
+KERNELS_O="$KNEW" W8A8_O="$W8A8" OUT_DIR="$results/diff_new" \
+  bash "$repo/tools/tests/q20_diff.sh" >/dev/null || {
+    echo "differential harness build failed" >&2; exit 1; }
+echo "--- building differential Q2_0 harness against production"
+KERNELS_O="$KOLD" W8A8_O="$W8A8" OUT_DIR="$results/diff_old" \
+  bash "$repo/tools/tests/q20_diff.sh" >/dev/null || {
+    echo "differential harness build failed" >&2; exit 1; }
 
 # --- ISA: did the pathological opcodes actually go away? --------------------
 echo
@@ -139,23 +160,50 @@ for o in "$KOLD:old" "$KNEW:new"; do
 done
 
 # --- numeric gate -----------------------------------------------------------
+# The property that matters for a decode rewrite: candidate and production
+# produce the SAME BITS on identical inputs. No oracle, no tolerance band, so
+# no dependence on what the kernel's internal rounding order happens to be.
 echo
-echo "=== bitwise dequant gate (one-hot extraction, no tolerance band) ==="
-gfail=0
+echo "=== differential gate (candidate vs production, byte for byte) ==="
+GATE_M="${GATE_M:-640}"              # checkpoint: expert_ff x hidden x experts
+GATE_K="${GATE_K:-2560}"
+GATE_TOPK="${GATE_TOPK:-8}"
+GATE_EXPERTS="${GATE_EXPERTS:-64}"   # x topk slots per set
+GATE_ROTATE="${GATE_ROTATE:-8}"      # routing sets; experts/topk covers them all
+GATE_PATTERNS="${GATE_PATTERNS:-24}"  # activation shapes
 for lbl in old new; do
-  if "$results/be_$lbl/bitexact_q20" --m 640 --k 640 --experts 3 \
-       >"$results/be_$lbl.out" 2>&1; then
-    printf '  %-4s %s\n' "$lbl" "$(tail -1 "$results/be_$lbl.out")"
-  else
-    printf '  %-4s FAIL\n' "$lbl"
-    grep -m5 'MISMATCH\|elements checked' "$results/be_$lbl.out"
-    gfail=1
-    [ "$lbl" = new ] && { echo "  candidate is not bit-exact; skipping timing."; }
+  if ! "$results/diff_$lbl/q20_diff" --emit "$results/$lbl.bin" \
+        --m "$GATE_M" --k "$GATE_K" --topk "$GATE_TOPK" \
+        --experts "$GATE_EXPERTS" --rotate "$GATE_ROTATE" \
+        --patterns "$GATE_PATTERNS" \
+        >"$results/diff_$lbl.out" 2>&1; then
+    printf '  %-4s harness run FAILED\n' "$lbl"
+    tail -5 "$results/diff_$lbl.out"
+    echo "log: $log"; exit 1
   fi
+  printf '  %-4s %s\n' "$lbl" "$(tail -1 "$results/diff_$lbl.out")"
 done
-if [ "$gfail" -ne 0 ]; then
-  echo "  ('old' failing means the gate itself is wrong, not the kernel.)"
+if cmp -s "$results/old.bin" "$results/new.bin"; then
+  echo "  IDENTICAL: $(stat -c%s "$results/old.bin") bytes -- candidate == production"
+else
+  echo "  DIFFERS: $(cmp "$results/old.bin" "$results/new.bin" 2>&1 | head -1)"
+  python3 - "$results/old.bin" "$results/new.bin" <<'PY'
+import sys
+o = open(sys.argv[1], 'rb').read(); n = open(sys.argv[2], 'rb').read()
+print("  sizes: old %d bytes, new %d bytes" % (len(o), len(n)))
+m = min(len(o), len(n))
+d = [i for i in range(24, m) if o[i] != n[i]]        # 24-byte header, then dumps
+print("  %d of %d payload bytes differ (%.4f%%)" % (len(d), m - 24,
+                                                     100.0 * len(d) / (m - 24)))
+for i in d[:10]:
+    print("    @%8d old %02x new %02x" % (i, o[i], n[i]))
+PY
+  echo "  candidate is not bit-exact; skipping timing."
   echo "log: $log"; exit 1
+fi
+if [ "$gate_only" = 1 ]; then
+  echo "gate-only run finished: identical. log: $log"
+  exit 0
 fi
 
 # --- A/B, interleaved -------------------------------------------------------
@@ -212,6 +260,6 @@ print("\n  rot=1 is LLC-resident, rot=16 walks disjoint expert sets (DRAM-cold).
 print("  q4_k is the control: it must not regress.")
 PY
 echo
-echo "bitwise dequant gate: PASS on both (old and new == float reference)"
+echo "differential gate: candidate output is byte-identical to production"
 echo "log: $log"
 echo "csv: $csv"
