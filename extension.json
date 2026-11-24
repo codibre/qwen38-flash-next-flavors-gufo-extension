@@ -1,11 +1,13 @@
 {
   "schema": 1,
   "name": "qwen38_flash_next_flavors",
-  "version": "0.2.0",
-  "api_version": ">= 0.3.37",
+  "version": "0.3.0",
+  "api_version": ">= 0.3.46",
   "entry": "qwen38_flash_next_flavors_register",
   "registration_target": "gufo_qwen38_flash_next_flavors",
-  "depends": [],
+  "depends": [
+    "qwen38_flash_next"
+  ],
   "platforms": [
     "linux"
   ],
@@ -26,6 +28,7 @@
       "entry": "qwen38_flash_next_flavors_provider_register"
     }
   ],
+  "options": [],
   "targets": {
     "gufo_qwen38_flash_next_flavors": {
       "requires": []
@@ -34,20 +37,6 @@
       "requires": [
         "hip"
       ]
-    },
-    "qwen38_flash_next_flavors_projection_ops_test": {
-      "requires": [
-        "hip",
-        "testing"
-      ],
-      "role": "test"
-    },
-    "qwen38_flash_next_flavors_routed_wmma_ops_test": {
-      "requires": [
-        "hip",
-        "testing"
-      ],
-      "role": "test"
     }
   }
 }
