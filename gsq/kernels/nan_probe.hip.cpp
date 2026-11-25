@@ -27,7 +27,7 @@ std::atomic<unsigned long long> g_pass{0};
 __global__ void ScanF32Kernel(const float* d, unsigned long long n,
                               NanBox* box, int tagc, int layer,
                               unsigned long long ntok,
-                              unsigned long long pass) {
+                              unsigned long long pass, float huge) {
   const unsigned long long stride =
       static_cast<unsigned long long>(gridDim.x) * blockDim.x;
   for (unsigned long long i = static_cast<unsigned long long>(blockIdx.x) *
@@ -35,7 +35,7 @@ __global__ void ScanF32Kernel(const float* d, unsigned long long n,
                               threadIdx.x;
        i < n; i += stride) {
     const float v = d[i];
-    if (!__builtin_isfinite(v)) {
+    if (!__builtin_isfinite(v) || (huge > 0.0f && fabsf(v) > huge)) {
       const int k = atomicAdd(&box->n, 1);
       if (k < 8) {
         box->v[k] = v;
@@ -52,7 +52,7 @@ __global__ void ScanF32Kernel(const float* d, unsigned long long n,
 __global__ void ScanF16Kernel(const __half* d, unsigned long long n,
                               NanBox* box, int tagc, int layer,
                               unsigned long long ntok,
-                              unsigned long long pass) {
+                              unsigned long long pass, float huge) {
   const unsigned long long stride =
       static_cast<unsigned long long>(gridDim.x) * blockDim.x;
   for (unsigned long long i = static_cast<unsigned long long>(blockIdx.x) *
@@ -60,7 +60,7 @@ __global__ void ScanF16Kernel(const __half* d, unsigned long long n,
                               threadIdx.x;
        i < n; i += stride) {
     const float v = __half2float(d[i]);
-    if (!__builtin_isfinite(v)) {
+    if (!__builtin_isfinite(v) || (huge > 0.0f && fabsf(v) > huge)) {
       const int k = atomicAdd(&box->n, 1);
       if (k < 8) {
         box->v[k] = v;
@@ -109,6 +109,16 @@ bool NanDbgEnabled() {
   return on;
 }
 
+// Optional magnitude threshold (GSQ_NAN_HUGE): values with |v| over it are
+// reported like non-finites, to trace overflow drift layer by layer.
+static float NanHugeThreshold() {
+  static const float t = [] {
+    const char* e = std::getenv("GSQ_NAN_HUGE");
+    return e != nullptr ? std::strtof(e, nullptr) : 0.0f;
+  }();
+  return t;
+}
+
 void NanPassEnter() {
   if (NanDbgEnabled()) g_pass.fetch_add(1);
 }
@@ -120,7 +130,7 @@ void NanScanF32(const float* d, std::size_t n, const char* what, int layer,
   if (g_box == nullptr) return;
   ScanF32Kernel<<<2048, 256, 0, stream>>>(
       d, n, g_box, what != nullptr ? what[0] : '?', layer, ntok,
-      g_pass.load());
+      g_pass.load(), NanHugeThreshold());
 }
 
 void NanScanF16(const __half* d, std::size_t n, const char* what, int layer,
@@ -130,7 +140,7 @@ void NanScanF16(const __half* d, std::size_t n, const char* what, int layer,
   if (g_box == nullptr) return;
   ScanF16Kernel<<<2048, 256, 0, stream>>>(
       d, n, g_box, what != nullptr ? what[0] : '?', layer, ntok,
-      g_pass.load());
+      g_pass.load(), NanHugeThreshold());
 }
 
 void NanLaunchCheck(const char* site, int layer) {

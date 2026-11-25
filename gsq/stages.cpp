@@ -126,6 +126,19 @@ public:
     if (route_vacuous_) {
       return true;
     }
+    if (NanDbgEnabled()) {
+      static long lin_calls = 0;
+      if (++lin_calls <= 12) {
+        std::fprintf(stderr,
+                     "[gsq-lin] pass rows=%u slots=%u w=%ux%u e=%u ntok=%u "
+                     "layer=%d\n",
+                     in.rows, in.slots, w.rows(), w.cols(), w.experts(),
+                     ctx.n_tokens, ctx.layer.index());
+      }
+      NanScanF32(in.x, static_cast<std::size_t>(in.rows) * w.cols(),
+                 in.slots == 1 ? "L" : "l", ctx.layer.index(), ctx.n_tokens,
+                 ctx.stream);
+    }
     // DefaultStages::HalfRows sizes the F16 conversion by ctx.n_tokens, but
     // these activations are in.rows wide: the down projection consumes the
     // per-slot SwiGLU buffer (n_tokens * slots rows) while the context still
@@ -158,6 +171,11 @@ public:
       }
       return false;
     }
+    NanLaunchCheck("lin_gemm", ctx.layer.index());
+    if (NanDbgEnabled())
+      NanScanF32(out, static_cast<std::size_t>(in.rows) * in.slots * w.rows(),
+                 in.slots == 1 ? "M" : "m", ctx.layer.index(), ctx.n_tokens,
+                 ctx.stream);
     return true;
   }
 
@@ -167,6 +185,9 @@ public:
               const fn::LinearInput& in, float* out) override {
     if (w.format_state() == nullptr) {
       return ctx.defaults.Linear(ctx, w, in, out);
+    }
+    if (NanDbgEnabled()) {
+      NanPassEnter();
     }
     if (!BuildRoute(ctx, w, in)) {
       return false;
