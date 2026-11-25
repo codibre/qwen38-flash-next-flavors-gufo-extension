@@ -1,13 +1,14 @@
 #ifndef GUFO_EXT_GSQ_STAGES_HPP_
 #define GUFO_EXT_GSQ_STAGES_HPP_
 
-// The flavor stages: the host's Flash-Next pipeline with one override —
-// the MoE FFN of layers whose routed experts carry a gsq::FlavorState.
-// Those three projections stay in their codebook encoding on device, where
-// no GGUF kernel reads them; the WMMA GEMMs in gsq/kernels decode them
-// after the LDS read, bitwise equal to the standalone reader. Everything
-// else — dense and attention projections, the shared expert, routing, the
-// epilogue, the draft head — is the runtime's own.
+// The flavor stages: the host's Flash-Next pipeline with the overrides
+// that keep layers whose routed experts carry a gsq::FlavorState on the
+// codebook path. The MoE FFN routes through the WMMA GEMMs in
+// gsq/kernels, and so do the bare Linear/LinearGroup calls — the MTP
+// verify and cache catch-up passes reach the experts as single
+// projections, where the runtime's own stages reject a custom format.
+// Everything else — dense and attention projections, the shared expert,
+// routing, the epilogue, the draft head — is the runtime's own.
 
 #include <memory>
 #include <string>

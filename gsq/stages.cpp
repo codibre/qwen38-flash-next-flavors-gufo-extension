@@ -19,14 +19,15 @@ namespace {
 
 std::size_t Align4(std::size_t n) { return (n + 3U) & ~std::size_t{3}; }
 
-// Scratch layout: the device tile map, then the down projection's
-// activation-row map. Sizes are the worst case over passes (every pass is
-// narrower than `max_batch`, and a routed pair never exceeds one per
-// expert slot).
+// Scratch layout: the device tile map, then the route-compaction maps the
+// Linear/LinearGroup route needs (it has no MoeScratch to borrow). Sizes
+// are the worst case over passes (every pass is narrower than
+// `max_batch`, and a routed pair never exceeds one row per expert slot).
 struct Sizes {
   std::size_t expert_max = 1;
   std::size_t tiles_entries = 0;
   std::size_t down_rows_entries = 0;
+  std::size_t slot_rows_max = 0;
 };
 
 Sizes ComputeSizes(const fn::Limits& limits) {
@@ -38,6 +39,7 @@ Sizes ComputeSizes(const fn::Limits& limits) {
     }
   }
   const std::size_t rows = static_cast<std::size_t>(limits.max_batch) * s.expert_max;
+  s.slot_rows_max = rows;
   // 16-row tiles maximize the entry count, so the narrow bound covers wide
   // passes too.
   s.tiles_entries =
@@ -54,15 +56,145 @@ public:
   [[nodiscard]] std::size_t ScratchBytes(const fn::Limits& limits) const override {
     const Sizes s = ComputeSizes(limits);
     return Align4(s.tiles_entries * sizeof(std::int32_t)) +
-           s.down_rows_entries * sizeof(std::int32_t);
+           Align4(s.expert_max * sizeof(std::uint32_t)) +
+           Align4((s.expert_max + 1) * sizeof(std::int32_t)) +
+           Align4(s.expert_max * sizeof(std::int32_t)) +
+           s.down_rows_entries * 2 * sizeof(std::int32_t);
   }
 
   bool Attach(const fn::Attachment& attachment, std::string* error) override {
     sizes_ = ComputeSizes(attachment.limits);
-    tiles_ = static_cast<std::int32_t*>(attachment.scratch);
-    down_x_ = tiles_ + Align4(sizes_.tiles_entries * sizeof(std::int32_t)) /
-                            sizeof(std::int32_t);
+    std::uint8_t* p = static_cast<std::uint8_t*>(attachment.scratch);
+    tiles_ = reinterpret_cast<std::int32_t*>(p);
+    p += Align4(sizes_.tiles_entries * sizeof(std::int32_t));
+    counts_ = reinterpret_cast<std::uint32_t*>(p);
+    p += Align4(sizes_.expert_max * sizeof(std::uint32_t));
+    bounds_ = reinterpret_cast<std::int32_t*>(p);
+    p += Align4((sizes_.expert_max + 1) * sizeof(std::int32_t));
+    cursors_ = reinterpret_cast<std::int32_t*>(p);
+    p += Align4(sizes_.expert_max * sizeof(std::int32_t));
+    rows_token_lin_ = reinterpret_cast<std::int32_t*>(p);
+    p += Align4(sizes_.down_rows_entries * sizeof(std::int32_t));
+    rows_slot_lin_ = reinterpret_cast<std::int32_t*>(p);
     (void)error;
+    return true;
+  }
+
+  // One projection of a flavor tensor against a LinearInput: expert ids
+  // are compacted into the 16-row bucket maps, then the WMMA GEMM decodes
+  // the codebook after the LDS read. Output row r reads activation row
+  // r / in.slots, exactly the contract's addressing.
+  bool BuildRoute(const fn::StageContext& ctx, const fn::Tensor& w,
+                  const fn::LinearInput& in) {
+    const std::uint32_t k = std::max(in.slots, 1U);
+    const std::uint32_t slot_rows = in.rows * in.slots;
+    if (in.ids == nullptr) {
+      if (ctx.error != nullptr && ctx.error->empty()) {
+        *ctx.error = "gsq: flavor projection without expert ids";
+      }
+      return false;
+    }
+    if (slot_rows == 0) {
+      route_vacuous_ = true;
+      return true;
+    }
+    if (slot_rows > sizes_.slot_rows_max) {
+      if (ctx.error != nullptr && ctx.error->empty()) {
+        *ctx.error = "gsq: flavor route exceeds its scratch";
+      }
+      return false;
+    }
+    route_vacuous_ = false;
+    wmma::DecodeRoutes(in.ids, counts_, bounds_, cursors_, rows_token_lin_,
+                       rows_slot_lin_, slot_rows, k, w.experts(), ctx.stream);
+    route_tile_rows_ = wmma::RoutedTileRows(slot_rows, w.experts());
+    route_capacity_ = wmma::RoutedTileCapacity(slot_rows, w.experts(),
+                                               route_tile_rows_);
+    wmma::RoutedTiles(counts_, tiles_, w.experts(), route_tile_rows_,
+                      route_capacity_, ctx.stream);
+    if (hipGetLastError() != hipSuccess) {
+      if (ctx.error != nullptr && ctx.error->empty()) {
+        *ctx.error = "gsq: flavor tile map launch failed";
+      }
+      return false;
+    }
+    return true;
+  }
+
+  bool RoutedProjection(const fn::StageContext& ctx, const fn::Tensor& w,
+                        const fn::LinearInput& in, float* out) {
+    if (route_vacuous_) {
+      return true;
+    }
+    const auto hx = static_cast<const __half*>(
+        ctx.defaults.HalfRows(ctx, in.x, w.cols()));
+    if (hx == nullptr) {
+      if (ctx.error != nullptr && ctx.error->empty()) {
+        *ctx.error = "gsq: missing F16 activation rows for the flavor linear";
+      }
+      return false;
+    }
+    const auto weight_type =
+        static_cast<wmma::WeightType>(FlavorType(w.format_state()));
+    // slots == 1 means the activations are already per slot (the down
+    // projection after SwiGLU); wider inputs are per token.
+    const std::int32_t* x_rows = in.slots == 1 ? rows_slot_lin_ : rows_token_lin_;
+    if (!wmma::RoutedF16Gemm(w.data(), weight_type, hx, tiles_,
+                             route_capacity_, route_tile_rows_, bounds_,
+                             x_rows, rows_token_lin_, rows_slot_lin_,
+                             std::max(in.slots, 1U), nullptr, out, nullptr,
+                             w.rows(), w.cols(), ctx.stream)) {
+      if (ctx.error != nullptr && ctx.error->empty()) {
+        *ctx.error = "gsq: flavor GEMM launch failed";
+      }
+      return false;
+    }
+    return true;
+  }
+
+  // A projection of a tensor with format_state(). The default rejects
+  // these tensors; the contract routes them here.
+  bool Linear(const fn::StageContext& ctx, const fn::Tensor& w,
+              const fn::LinearInput& in, float* out) override {
+    if (w.format_state() == nullptr) {
+      return ctx.defaults.Linear(ctx, w, in, out);
+    }
+    if (!BuildRoute(ctx, w, in)) {
+      return false;
+    }
+    return RoutedProjection(ctx, w, in, out);
+  }
+
+  // The routed gate + up pair (and the dense groups, which never carry a
+  // flavor tensor). One compaction serves the whole group; the executor
+  // runs SwiGLU over the two outputs afterwards.
+  bool LinearGroup(const fn::StageContext& ctx,
+                   std::span<const fn::LinearJob> jobs,
+                   const fn::LinearInput& in) override {
+    bool any_flavor = false;
+    for (const fn::LinearJob& job : jobs) {
+      any_flavor = any_flavor || job.w.format_state() != nullptr;
+    }
+    if (!any_flavor) {
+      for (const fn::LinearJob& job : jobs) {
+        if (!ctx.defaults.Linear(ctx, job.w, in, job.out)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (!BuildRoute(ctx, jobs[0].w, in)) {
+      return false;
+    }
+    for (const fn::LinearJob& job : jobs) {
+      if (job.w.format_state() == nullptr) {
+        if (!ctx.defaults.Linear(ctx, job.w, in, job.out)) {
+          return false;
+        }
+      } else if (!RoutedProjection(ctx, job.w, in, job.out)) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -221,9 +353,16 @@ public:
   }
 
 private:
-  Sizes sizes_;
-  std::int32_t* tiles_{nullptr};
-  std::int32_t* down_x_{nullptr};
+ Sizes sizes_;
+ std::int32_t* tiles_{nullptr};
+ std::uint32_t* counts_{nullptr};
+ std::int32_t* bounds_{nullptr};
+ std::int32_t* cursors_{nullptr};
+ std::int32_t* rows_token_lin_{nullptr};
+ std::int32_t* rows_slot_lin_{nullptr};
+ std::uint32_t route_tile_rows_{16};
+ std::uint32_t route_capacity_{0};
+ bool route_vacuous_{false};
 };
 
 }  // namespace
