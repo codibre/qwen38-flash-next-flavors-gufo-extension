@@ -126,8 +126,17 @@ public:
     if (route_vacuous_) {
       return true;
     }
+    // DefaultStages::HalfRows sizes the F16 conversion by ctx.n_tokens, but
+    // these activations are in.rows wide: the down projection consumes the
+    // per-slot SwiGLU buffer (n_tokens * slots rows) while the context still
+    // counts tokens. Converting only n_tokens rows leaves the GEMM reading
+    // stale rows of a previous activation — the garbage that surfaced as
+    // 'no finite values' in the next attention block. Carry the true row
+    // count in a context copy.
+    fn::StageContext act = ctx;
+    act.n_tokens = in.rows;
     const auto hx = static_cast<const __half*>(
-        ctx.defaults.HalfRows(ctx, in.x, w.cols()));
+        ctx.defaults.HalfRows(act, in.x, w.cols()));
     if (hx == nullptr) {
       if (ctx.error != nullptr && ctx.error->empty()) {
         *ctx.error = "gsq: missing F16 activation rows for the flavor linear";
