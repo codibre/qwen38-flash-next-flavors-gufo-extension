@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "gsq/format.hpp"
+#include "gsq/kernels/nan_probe.hpp"
 #include "gsq/kernels/rows.hpp"
 #include "gsq/kernels/routed_wmma.hpp"
 
@@ -82,17 +83,41 @@ public:
       }
       return false;
     }
+    if (routing.last_only && ctx.n_tokens > 0) {
+      // Component-cache catch-up: only the last row's output is consumed,
+      // and the earlier rows carry route choices nobody committed to.
+      // The runtime's own route cannot read flavor experts either, so run
+      // one flavor pass over the last row alone.
+      const std::size_t last = ctx.n_tokens - 1;
+      fn::StageContext one = ctx;
+      one.n_tokens = 1;
+      fn::MoeRouting tail = routing;
+      tail.ids += last * routing.used;
+      tail.weights += last * routing.used;
+      tail.router += static_cast<std::size_t>(last) * routing.router_stride;
+      tail.last_only = false;
+      return MoeFfn(one, tail,
+                    x + last * static_cast<std::size_t>(gate.cols()),
+                    out + last * static_cast<std::size_t>(down.rows()));
+    }
+    if (NanDbgEnabled()) NanPassEnter();
     if (!ctx.defaults.SharedExpert(ctx, routing, x, routing.overlap)) {
       return false;
     }
+    NanLaunchCheck("shared_expert", ctx.layer.index());
     if (ctx.n_tokens == 0) {
       if (routing.overlap && !ctx.defaults.JoinSide(ctx)) return false;
       ctx.defaults.MoeEpilogue(ctx, routing, out, /*half_down=*/true);
       return true;
     }
+    if (NanDbgEnabled())
+      NanScanF32(x, static_cast<std::size_t>(ctx.n_tokens) * gate.cols(), "x",
+                 ctx.layer.index(), ctx.n_tokens, ctx.stream);
     ctx.defaults.CompactRoutes(ctx, routing);
+    NanLaunchCheck("compact_routes", ctx.layer.index());
     const auto* hx = static_cast<const __half*>(
         ctx.defaults.HalfRows(ctx, x, gate.cols()));
+    NanLaunchCheck("half_rows", ctx.layer.index());
     if (hx == nullptr) {
       if (ctx.error->empty()) {
         *ctx.error = "gsq: no F16 activation rows for the flavor experts";
@@ -117,9 +142,11 @@ public:
                          routing.scratch.rows_token,
                          routing.scratch.rows_slot, rows, used, experts,
                          ctx.stream);
+      NanLaunchCheck("decode_routes", ctx.layer.index());
     }
     wmma::RoutedTiles(routing.scratch.expert_counts, tiles_, experts,
                       tile_rows, capacity, ctx.stream);
+    NanLaunchCheck("routed_tiles", ctx.layer.index());
 
     const auto gate_type =
         static_cast<wmma::WeightType>(FlavorType(gate.format_state()));
@@ -140,6 +167,7 @@ public:
       }
       return false;
     }
+    NanLaunchCheck("gate_gemm", ctx.layer.index());
     if (!wmma::RoutedF16Gemm(up.data(), up_type, hx, tiles_, capacity,
                              tile_rows, routing.scratch.routed_bounds,
                              routing.scratch.rows_token,
@@ -153,6 +181,7 @@ public:
       }
       return false;
     }
+    NanLaunchCheck("up_gemm", ctx.layer.index());
     // The down GEMM reads the SwiGLU output the up projection staged at the
     // global routing-slot rows; the kernel indexes activations by slot
     // (rows_slot doubles as the input map, matching the host's own route).
@@ -170,8 +199,24 @@ public:
       }
       return false;
     }
+    NanLaunchCheck("down_gemm", ctx.layer.index());
+    if (NanDbgEnabled()) {
+      NanScanF32(routing.scratch.gate,
+                 static_cast<std::size_t>(rows) * gate.rows(), "gate",
+                 ctx.layer.index(), ctx.n_tokens, ctx.stream);
+      NanScanF16(reinterpret_cast<const __half*>(routing.scratch.up),
+                 static_cast<std::size_t>(rows) * up.rows(), "up",
+                 ctx.layer.index(), ctx.n_tokens, ctx.stream);
+      NanScanF16(reinterpret_cast<const __half*>(routing.scratch.down),
+                 static_cast<std::size_t>(rows) * down.rows(), "down",
+                 ctx.layer.index(), ctx.n_tokens, ctx.stream);
+    }
     if (routing.overlap && !ctx.defaults.JoinSide(ctx)) return false;
     ctx.defaults.MoeEpilogue(ctx, routing, out, /*half_down=*/true);
+    NanLaunchCheck("epilogue", ctx.layer.index());
+    if (NanDbgEnabled())
+      NanScanF32(out, static_cast<std::size_t>(ctx.n_tokens) * down.rows(),
+                 "out", ctx.layer.index(), ctx.n_tokens, ctx.stream);
     return true;
   }
 
