@@ -48,6 +48,7 @@ if(TARGET gufo_qwen38_flash_next_flavors_hip)
     SOURCES
       gsq/kernels/routed_wmma.hip.cpp
       gsq/kernels/rows.hip.cpp
+      gsq/kernels/nan_probe.hip.cpp
   )
   target_compile_definitions(gufo_qwen38_flash_next_flavors_hip PRIVATE
     ENGINE_ENABLE_HIP=1)

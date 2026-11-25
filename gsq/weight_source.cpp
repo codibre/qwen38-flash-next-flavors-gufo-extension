@@ -12,6 +12,7 @@
 
 #include "gsq/format.hpp"
 #include "gsq/identity.hpp"
+#include "gsq/kernels/nan_probe.hpp"
 
 namespace gufo::ext::gsq {
 namespace {
@@ -116,9 +117,10 @@ std::unique_ptr<NgramTable> GsqWeightSource::Ngram(const ModelWeights& weights,
     // checkpoint's Q5_1 table streams through this row decoder instead.
     const std::size_t row_bytes = static_cast<std::size_t>(t.RowBytes());
     const std::size_t head_dim = weights.config.ple_head_dim;
-    auto decode = [head_dim](const std::uint8_t* src, std::uint32_t /*row*/,
+    auto decode = [head_dim](const std::uint8_t* src, std::uint32_t row,
                              float* dst) {
       ::gufo::quant::DequantizeQ5_1(src, dst, head_dim);
+      NanScanHostReport("ple_q5_1", -1, row, dst, head_dim);
     };
     return NgramTable::OpenEncoded(
         reader_->GetMappedRegions()[t.shard].file_descriptor, t.file_offset,
