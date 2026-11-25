@@ -228,6 +228,27 @@ public:
     return true;
   }
 
+  // GSQ_NAN boundary probe: scan both edges of the host GDN on the first
+  // layers ('g' input rows, 'G' projected output rows). Decides whether the
+  // post-restore NaN is born inside the host LinearAttention or downstream.
+  bool LinearAttention(const fn::StageContext& ctx,
+                       const fn::LinearAttentionArgs& args, const float* x,
+                       float* out) override {
+    const bool dbg = NanDbgEnabled() && ctx.layer.index() <= 6 &&
+                     ctx.n_tokens <= 4096;
+    if (dbg) {
+      NanScanF32(x, static_cast<std::size_t>(ctx.n_tokens) * 2560, "g",
+                 ctx.layer.index(), ctx.n_tokens, ctx.stream);
+    }
+    const bool ok = ctx.defaults.LinearAttention(ctx, args, x, out);
+    if (dbg) {
+      NanLaunchCheck("gdn", ctx.layer.index());
+      NanScanF32(out, static_cast<std::size_t>(ctx.n_tokens) * 2560, "G",
+                 ctx.layer.index(), ctx.n_tokens, ctx.stream);
+    }
+    return ok;
+  }
+
   bool MoeFfn(const fn::StageContext& ctx, const fn::MoeRouting& routing,
               const float* x, float* out) override {
     const fn::Tensor gate = ctx.layer.tensor(fn::TensorId::kFfnGateExps);
